@@ -207,90 +207,136 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return;
 
       } else {
-      // ── LinkedIn Feed Post / Profile Post / Share URL ───────────────────
-      // Handles URLs like: /feed/, /posts/..., /in/username/recent-activity/
-      // Many "hiring" announcements are regular posts — sometimes image-only.
-      const path = window.location.pathname;
-      const isPostPage = path.includes('/posts/') || path.includes('/feed/') || path.includes('/recent-activity/');
+      // ── LinkedIn Feed Post / Profile Post ────────────────────────────────
+      // Handles: /feed/, /posts/..., /in/..., /company/.../posts/
 
-      // Find the focused post — on a post detail page it's the main article,
-      // on the feed we pick the most visible post in the viewport.
       let focusedPost = null;
 
-      // Post detail page: there's usually one main post
-      focusedPost =
-        document.querySelector('.feed-shared-update-v2--highlight') ||
-        document.querySelector('article[data-urn]')                 ||
-        document.querySelector('.update-components-actor')?.closest('[data-urn]') ||
-        document.querySelector('.feed-shared-update-v2');
+      // Strategy 1: direct post detail page — single main article
+      if (lnPath.includes('/posts/') || lnPath.includes('/pulse/')) {
+        focusedPost =
+          document.querySelector('.scaffold-layout__main [data-id]')   ||
+          document.querySelector('.scaffold-layout__main article')      ||
+          document.querySelector('[data-id*="urn:li:activity"]');
+      }
 
-      // If not found (feed list), pick the post most visible in viewport
+      // Strategy 2: feed list — try every known post container selector
+      // LinkedIn has used many different class names across versions (2022–2025)
       if (!focusedPost) {
-        const posts = Array.from(document.querySelectorAll('.feed-shared-update-v2, article[data-id]'));
-        let bestVis = 0;
-        for (const post of posts) {
+        const POST_SELECTORS = [
+          '[data-id*="urn:li:activity"]',         // most reliable — data attribute
+          '[data-id*="urn:li:ugcPost"]',
+          '[data-id*="urn:li:share"]',
+          '.feed-shared-update-v2',               // older LinkedIn
+          'li.scaffold-finite-scroll__list-item', // newer LinkedIn feed
+          'article[data-id]',
+          '.occludable-update',
+        ];
+
+        let candidates = [];
+        for (const sel of POST_SELECTORS) {
+          const found = Array.from(document.querySelectorAll(sel));
+          if (found.length > 0) { candidates = found; break; }
+        }
+
+        // Pick the post with most visible area in the viewport
+        let bestVis = 50; // must be at least 50px visible to count
+        for (const post of candidates) {
           const rect = post.getBoundingClientRect();
-          const vis = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+          const vis  = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
           if (vis > bestVis) { bestVis = vis; focusedPost = post; }
         }
       }
 
+      // Strategy 3: any container that has the hiring post text visible
       if (!focusedPost) {
-        sendResponse({ text: document.body.innerText.slice(0, 3000) });
+        const mainArea = document.querySelector('.scaffold-layout__main, main, #main');
+        if (mainArea) {
+          // Use main area text — avoid document.body which starts with nav
+          extractedText = mainArea.innerText.slice(0, 4000);
+        }
+        sendResponse({ text: extractedText || '', metadata: { source_type: 'linkedin_post' } });
         return;
       }
 
-      // Author / poster name
-      const authorEl = focusedPost.querySelector(
-        '.update-components-actor__name span[aria-hidden="true"], .feed-shared-actor__name, .update-components-actor__name'
-      );
-      const authorName = authorEl?.innerText?.trim() || '';
+      // ── Extract author info ─────────────────────────────────────────────
+      // Multiple selector attempts for LinkedIn's varying class names
+      const nameEl =
+        focusedPost.querySelector('.update-components-actor__name span[aria-hidden="true"]') ||
+        focusedPost.querySelector('.update-components-actor__name span:not(.visually-hidden)') ||
+        focusedPost.querySelector('.update-components-actor__name')     ||
+        focusedPost.querySelector('.feed-shared-actor__name')           ||
+        focusedPost.querySelector('[data-anonymize="person-name"]');
 
-      const authorSubEl = focusedPost.querySelector(
-        '.update-components-actor__description, .feed-shared-actor__description'
-      );
-      const authorSub = authorSubEl?.innerText?.trim() || '';
+      const authorName = nameEl?.innerText?.trim().replace(/\n.*/s, '') || '';  // first line only
 
-      // Post text
-      const textEl = focusedPost.querySelector(
-        '.update-components-text, .feed-shared-text, .attributed-text-segment-list__content'
-      );
-      extractedText = textEl?.innerText?.trim() || focusedPost.innerText?.trim() || '';
+      const bioEl =
+        focusedPost.querySelector('.update-components-actor__description span[aria-hidden="true"]') ||
+        focusedPost.querySelector('.update-components-actor__description')  ||
+        focusedPost.querySelector('.update-components-actor__subtitle')     ||
+        focusedPost.querySelector('.feed-shared-actor__description');
 
-      // Post images — CRITICAL for image-flyer hiring posts
-      const postImgEls = Array.from(focusedPost.querySelectorAll('img, .update-components-image__image'))
-        .filter(img => {
-          const w = img.naturalWidth || img.width;
-          const h = img.naturalHeight || img.height;
-          return img.src && !img.src.startsWith('data:') && w > 100 && h > 100 &&
-                 !img.src.includes('profile') && !img.src.includes('avatar') && !img.src.includes('icon');
-        }).slice(0, 4);
+      const authorBio = bioEl?.innerText?.trim().replace(/\n.*/s, '') || '';
 
+      // ── Extract post text ONLY (exclude reactions/comments bar) ────────
+      const postTextEl =
+        focusedPost.querySelector('.update-components-text .break-words')  ||
+        focusedPost.querySelector('.update-components-text__text-view')    ||
+        focusedPost.querySelector('.feed-shared-text .break-words')        ||
+        focusedPost.querySelector('.feed-shared-text')                     ||
+        focusedPost.querySelector('.update-components-text')               ||
+        focusedPost.querySelector('.attributed-text-segment-list__content');
+
+      if (postTextEl) {
+        extractedText = postTextEl.innerText.trim();
+      } else {
+        // Controlled fallback: take innerText but cap it to avoid reaction bar garbage
+        const raw = focusedPost.innerText || '';
+        // LinkedIn posts rarely exceed 3000 chars; beyond that is reactions/comments
+        extractedText = raw.slice(0, 3000).trim();
+      }
+
+      // ── Capture images from the post (hiring flyers, salary tables, etc.) ──
+      const postImgEls = Array.from(
+        focusedPost.querySelectorAll(
+          '.update-components-image__image img, .feed-shared-image__container img, ' +
+          '.update-components-document__thumbnail img, img[data-delayed-url], img'
+        )
+      ).filter(img => {
+        const src = img.src || img.getAttribute('data-delayed-url') || '';
+        const w   = img.naturalWidth  || img.width  || 0;
+        const h   = img.naturalHeight || img.height || 0;
+        return src && !src.startsWith('data:') && w > 80 && h > 80 &&
+               !src.includes('profile') && !src.includes('ghost') &&
+               !src.includes('avatar') && !src.includes('icon') &&
+               !src.includes('emoji');
+      }).slice(0, 4);
+
+      const postImageUrls    = postImgEls.map(img => img.src || img.getAttribute('data-delayed-url') || '');
       const postImageDataUrls = [];
-      const postImageUrls = postImgEls.map(img => img.src);
 
       for (const img of postImgEls) {
         try {
           const canvas = document.createElement('canvas');
-          canvas.width = img.naturalWidth || img.width;
+          canvas.width  = img.naturalWidth  || img.width;
           canvas.height = img.naturalHeight || img.height;
           canvas.getContext('2d').drawImage(img, 0, 0);
           const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          if (dataUrl && dataUrl.length > 100) postImageDataUrls.push(dataUrl);
-        } catch(e) { /* cross-origin — skip canvas but URL is captured */ }
+          if (dataUrl && dataUrl.length > 200) postImageDataUrls.push(dataUrl);
+        } catch(e) { /* cross-origin — URL captured, backend will fetch */ }
       }
 
-      const postMeta = {
-        poster_name: authorName,
-        poster_headline: authorSub,
-        source_type: 'linkedin_post',
-        has_images: postImgEls.length > 0
-      };
+      console.log(`ScamShield post: author="${authorName}" bio="${authorBio}" text=${extractedText.length}chars images=${postImgEls.length}`);
 
-      console.log(`ScamShield: LinkedIn post — author="${authorName}", images=${postImgEls.length}, text=${extractedText.length} chars`);
-      sendResponse({ text: extractedText, metadata: postMeta, image_urls: postImageUrls, image_data: postImageDataUrls });
+      sendResponse({
+        text:       extractedText,
+        metadata:   { poster_name: authorName, poster_headline: authorBio, source_type: 'linkedin_post', has_images: postImgEls.length > 0 },
+        image_urls: postImageUrls,
+        image_data: postImageDataUrls
+      });
       return;
       } // end else (post page)
+
 
     } else if (host.includes('mail.google.com')) {
       // Gmail — extract email body + sender metadata
