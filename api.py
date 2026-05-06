@@ -1493,18 +1493,59 @@ def _run_deep_verify(task_key: str, job_title: str, company: str):
             color = "red"
 
         # Extract platforms confirmed/not-found
-        confirmed = re.findall(r"Confirmed on\s*:\s*(.+)", output)
-        not_found = re.findall(r"Not found on\s*:\s*(.+)", output)
-        careers_url = re.findall(r"Careers URL\s*:\s*(\S+)", output)
-        time_taken = re.findall(r"Total time\s*:\s*([\d.]+)s", output)
+        confirmed_str = re.findall(r"Confirmed on\s*:\s*(.+)", output)
+        not_found_str = re.findall(r"Not found on\s*:\s*(.+)", output)
+        careers_url   = re.findall(r"Careers URL\s*:\s*(\S+)", output)
+        time_taken    = re.findall(r"Total time\s*:\s*([\d.]+)s", output)
+
+        confirmed_list = [p.strip() for p in confirmed_str[0].split(",") if p.strip()] if confirmed_str else []
+        not_found_list = [p.strip() for p in not_found_str[0].split(",") if p.strip()] if not_found_str else []
+
+        # ── Platform-count-based score adjustment ─────────────────────────
+        # Confirmed on more platforms = stronger legitimacy signal
+        job_portals = {"Naukri","Indeed","LinkedIn","Glassdoor","Shine","Foundit",
+                       "TimesJobs","Monster","SimplyHired","Internshala","Wellfound",
+                       "iimjobs","Cutshort","Instahyre"}
+        portal_hits = sum(1 for p in confirmed_list if p in job_portals)
+        has_careers  = "Careers page" in confirmed_list
+        has_google   = "Google" in confirmed_list
+
+        if portal_hits == 0 and not has_careers and not has_google:
+            score_adjustment = +20   # Nowhere to be found — suspicious
+            adj_reason = f"Not found on any job platform (+20 risk)"
+        elif portal_hits <= 2:
+            score_adjustment = -5    # Slight trust signal
+            adj_reason = f"Found on {portal_hits} platform(s) (-5 risk)"
+        elif portal_hits <= 5:
+            score_adjustment = -15   # Good multi-platform presence
+            adj_reason = f"Found on {portal_hits} platforms (-15 risk)"
+        elif portal_hits <= 9:
+            score_adjustment = -25   # Strong presence
+            adj_reason = f"Found on {portal_hits} platforms (-25 risk)"
+        else:
+            score_adjustment = -35   # Extremely widely listed
+            adj_reason = f"Found on {portal_hits}+ platforms (-35 risk)"
+
+        if has_careers:
+            score_adjustment -= 10   # Official careers page = very strong signal
+            adj_reason += " + Careers page verified (-10)"
+        if has_google:
+            score_adjustment -= 5    # Google index = widely known
+            adj_reason += " + Google confirmed (-5)"
+
+        score_adjustment = max(-50, min(score_adjustment, +25))  # cap range
+        # ─────────────────────────────────────────────────────────────────
 
         _verify_tasks[task_key] = {
             "status": "done",
             "result": {
                 "verdict": status_label,
                 "color": color,
-                "confirmed_on": confirmed[0].split(", ") if confirmed else [],
-                "not_found_on": not_found[0].split(", ") if not_found else [],
+                "confirmed_on": confirmed_list,
+                "not_found_on": not_found_list,
+                "portal_hits": portal_hits,
+                "score_adjustment": score_adjustment,
+                "adj_reason": adj_reason,
                 "careers_url": careers_url[0] if careers_url else None,
                 "time_taken": float(time_taken[0]) if time_taken else None,
                 "raw_output": output[-1500:] if len(output) > 1500 else output

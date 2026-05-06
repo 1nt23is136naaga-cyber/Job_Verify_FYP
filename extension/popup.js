@@ -352,12 +352,46 @@ async function startDeepVerify(jobTitle, company) {
           banner.style.color = '#fff';
           const confirmed = result.confirmed_on?.join(', ') || 'None';
           const notFound  = result.not_found_on?.join(', ') || 'None';
+          const hits      = result.portal_hits ?? 0;
           banner.innerHTML =
             `<strong>🔍 Deep Verify: ${result.verdict}</strong><br>` +
-            `✅ Found on: ${confirmed}<br>` +
+            `✅ Found on (${hits}): ${confirmed}<br>` +
             `❌ Not found: ${notFound}` +
             (result.careers_url ? `<br>🏢 Careers: <a href="${result.careers_url}" target="_blank" style="color:#90caf9">${result.careers_url}</a>` : '') +
             (result.time_taken ? `<br><small style="opacity:0.7">⏱ ${result.time_taken.toFixed(1)}s</small>` : '');
+
+          // ── Apply score adjustment to the Trust Ring ─────────────────
+          const adj = result.score_adjustment ?? 0;
+          if (adj !== 0) {
+            const ring       = document.getElementById('ring-fill');
+            const numEl      = document.getElementById('score-number');
+            const currentRisk = 100 - parseInt(numEl.textContent || '50');
+            const newRisk     = Math.max(0, Math.min(100, currentRisk + adj));
+            const newTrust    = 100 - newRisk;
+            const circumference = 314;
+            ring.style.strokeDashoffset = circumference - (newTrust / 100) * circumference;
+
+            // Animated count-up/down to new score
+            let count = parseInt(numEl.textContent);
+            const step = newTrust > count ? 1 : -1;
+            const anim = setInterval(() => {
+              count += step;
+              numEl.textContent = count;
+              if (count === newTrust) clearInterval(anim);
+            }, 25);
+          }
+
+          // ── Add a platform verification pill ─────────────────────────
+          const pillsContainer = document.getElementById('risk-pills');
+          if (pillsContainer) {
+            const platPill = document.createElement('span');
+            platPill.className = 'pill ' + (adj <= 0 ? 'pill-good' : 'pill-bad');
+            const adjLabel = adj <= 0 ? `[+${Math.abs(adj)} pts trust]` : `[+${adj} pts risk]`;
+            platPill.textContent = adj <= 0
+              ? `🌐 Found on ${hits} job platform(s) ${adjLabel}`
+              : `🌐 Not verified on major platforms ${adjLabel}`;
+            pillsContainer.appendChild(platPill);
+          }
         }
       } catch(e) { /* keep polling */ }
     }, 5000);
