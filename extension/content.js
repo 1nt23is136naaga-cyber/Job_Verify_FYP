@@ -206,9 +206,54 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ text: extractedText, metadata, image_urls: imageUrls, image_data: imageDataUrls });
       return;
 
+      } else if (lnPath.startsWith('/in/')) {
+        // ── LinkedIn User Profile Page ──────────────────────────────────────
+        // Scrapes the person's profile to evaluate them directly
+        
+        // Auto-scroll slightly to trigger lazy loading of About/Experience
+        await new Promise(r => {
+          window.scrollBy(0, 500);
+          setTimeout(() => { window.scrollTo(0, 0); r(); }, 300);
+        });
+
+        const $t = (sel) => {
+          const el = document.querySelector(sel);
+          return el ? el.innerText.trim() : '';
+        };
+
+        const name = $t('h1.text-heading-xlarge');
+        const headline = $t('.text-body-medium.break-words');
+        
+        // Find About section
+        let aboutText = '';
+        const aboutCard = Array.from(document.querySelectorAll('section')).find(s => s.querySelector('div[id="about"]'));
+        if (aboutCard) {
+          const aboutContent = aboutCard.querySelector('.display-flex.ph5.pv3');
+          if (aboutContent) aboutText = aboutContent.innerText.trim();
+        }
+
+        // Find Experience section
+        let expText = '';
+        const expCard = Array.from(document.querySelectorAll('section')).find(s => s.querySelector('div[id="experience"]'));
+        if (expCard) {
+          expText = expCard.innerText.trim();
+        }
+
+        const profileText = `[PROFILE EVALUATION]\nName: ${name}\nHeadline: ${headline}\n\nABOUT:\n${aboutText}\n\nEXPERIENCE:\n${expText}`;
+        
+        const meta = {
+          poster_name: name,
+          poster_headline: headline,
+          source_type: 'linkedin_profile'
+        };
+
+        console.log(`ScamShield: Scraped profile for ${name}`);
+        sendResponse({ text: profileText.slice(0, 4000), metadata: meta, image_urls: [], image_data: [] });
+        return;
+
       } else {
-      // ── LinkedIn Feed Post / Profile Post ────────────────────────────────
-      // Handles: /feed/, /posts/..., /in/..., /company/.../posts/
+      // ── LinkedIn Feed Post / Share URL ────────────────────────────────────
+      // Handles: /feed/, /posts/..., /company/.../posts/
 
       let focusedPost = null;
 
@@ -221,14 +266,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       // Strategy 2: feed list — try every known post container selector
-      // LinkedIn has used many different class names across versions (2022–2025)
       if (!focusedPost) {
         const POST_SELECTORS = [
-          '[data-id*="urn:li:activity"]',         // most reliable — data attribute
+          '[data-id*="urn:li:activity"]',
           '[data-id*="urn:li:ugcPost"]',
           '[data-id*="urn:li:share"]',
-          '.feed-shared-update-v2',               // older LinkedIn
-          'li.scaffold-finite-scroll__list-item', // newer LinkedIn feed
+          '.feed-shared-update-v2',
+          'li.scaffold-finite-scroll__list-item',
           'article[data-id]',
           '.occludable-update',
         ];
@@ -239,12 +283,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           if (found.length > 0) { candidates = found; break; }
         }
 
-        // Pick the post with most visible area in the viewport
-        let bestVis = 50; // must be at least 50px visible to count
+        // Pick the post closest to the CENTER of the viewport
+        let closestDist = Infinity;
+        const viewportCenter = window.innerHeight / 2;
+        
         for (const post of candidates) {
           const rect = post.getBoundingClientRect();
-          const vis  = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
-          if (vis > bestVis) { bestVis = vis; focusedPost = post; }
+          // Check if post is visible at all
+          if (rect.bottom > 0 && rect.top < window.innerHeight) {
+            const postCenter = rect.top + (rect.height / 2);
+            const dist = Math.abs(viewportCenter - postCenter);
+            if (dist < closestDist) {
+              closestDist = dist;
+              focusedPost = post;
+            }
+          }
         }
       }
 
