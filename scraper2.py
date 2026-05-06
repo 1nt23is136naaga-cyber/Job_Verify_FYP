@@ -56,27 +56,32 @@ import re, time, random, asyncio, os, logging, sys
 from urllib.parse import quote as urlquote
 from bs4 import BeautifulSoup
 
+# Ensure Windows prints unicode (emojis/box drawings) without crashing
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
+
 # ── Optional deps ──────────────────────────────────────────────────────────────
 try:
     import httpx
     HAS_HTTPX = True
 except ImportError:
     HAS_HTTPX = False
-    print("⚠️  pip install httpx[http2]")
+    print("[WARNING] pip install httpx[http2]")
 
 try:
     from playwright.async_api import async_playwright, Browser, BrowserContext, Page
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
-    print("⚠️  pip install playwright && playwright install chromium")
+    print("[WARNING] pip install playwright && playwright install chromium")
 
 try:
     from rapidfuzz import fuzz
     HAS_RAPIDFUZZ = True
 except ImportError:
     HAS_RAPIDFUZZ = False
-    print("⚠️  pip install rapidfuzz")
+    print("[WARNING] pip install rapidfuzz")
 
 try:
     import pdfplumber
