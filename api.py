@@ -69,6 +69,13 @@ class FeedbackRequest(BaseModel):
     job_id: int
     is_scam: bool
 
+class VerifyRequest(BaseModel):
+    job_title: str
+    company: str
+
+# In-memory store for deep verification tasks (job_title+company -> result)
+_verify_tasks: dict = {}   # key: "title|company" -> {"status": "pending"|"done", "result": dict}
+
 REPUTATION_FILE = "reputation_db.json"
 
 def load_reputation():
@@ -1438,6 +1445,116 @@ def analyze_job(req: AnalyzeRequest):
         "has_online_presence": has_online_presence,
         "risk_factors": risk_factors
     }
+
+# ── DEEP VERIFICATION (scraper2.py integration) ──────────────────────────────
+
+import threading
+
+def _run_deep_verify(task_key: str, job_title: str, company: str):
+    """
+    Runs scraper2.py's async engine in a background thread.
+    Checks 14 job platforms + Google + company careers page.
+    Stores result in _verify_tasks[task_key].
+    """
+    try:
+        from scraper2 import (
+            clean_job_title, clean_company_name,
+            _async_verify, aggregate_verdict,
+        )
+        import asyncio, re
+
+        clean_title   = clean_job_title(job_title)
+        clean_company = clean_company_name(company)
+
+        # Capture printed output to parse results
+        import io, sys
+        buf = io.StringIO()
+        old_stdout = sys.stdout
+        sys.stdout = buf
+
+        asyncio.run(_async_verify(clean_title, clean_company, job_title))
+
+        sys.stdout = old_stdout
+        output = buf.getvalue()
+
+        # Parse final verdict from output
+        verdict_real     = "✅  REAL" in output
+        verdict_uncertain = "⚠️  UNCERTAIN" in output
+        verdict_suspicious = "⛔  SUSPICIOUS" in output
+
+        if verdict_real:
+            status_label = "Confirmed Real"
+            color = "green"
+        elif verdict_uncertain:
+            status_label = "Uncertain — May Be Real"
+            color = "orange"
+        else:
+            status_label = "Not Confirmed — Possibly Fake"
+            color = "red"
+
+        # Extract platforms confirmed/not-found
+        confirmed = re.findall(r"Confirmed on\s*:\s*(.+)", output)
+        not_found = re.findall(r"Not found on\s*:\s*(.+)", output)
+        careers_url = re.findall(r"Careers URL\s*:\s*(\S+)", output)
+        time_taken = re.findall(r"Total time\s*:\s*([\d.]+)s", output)
+
+        _verify_tasks[task_key] = {
+            "status": "done",
+            "result": {
+                "verdict": status_label,
+                "color": color,
+                "confirmed_on": confirmed[0].split(", ") if confirmed else [],
+                "not_found_on": not_found[0].split(", ") if not_found else [],
+                "careers_url": careers_url[0] if careers_url else None,
+                "time_taken": float(time_taken[0]) if time_taken else None,
+                "raw_output": output[-1500:] if len(output) > 1500 else output
+            }
+        }
+
+    except Exception as e:
+        _verify_tasks[task_key] = {
+            "status": "done",
+            "result": {
+                "verdict": "Verification Error",
+                "color": "grey",
+                "error": str(e),
+                "confirmed_on": [],
+                "not_found_on": []
+            }
+        }
+
+
+@app.post("/verify")
+def start_deep_verify(req: VerifyRequest):
+    """
+    Starts a background deep verification using scraper2.py (14 platforms + Google + Careers).
+    Returns a task_key immediately — poll /verify_status/{task_key} for results.
+    Takes 30-120 seconds to complete.
+    """
+    task_key = f"{req.job_title.lower().strip()}|{req.company.lower().strip()}"
+
+    if task_key in _verify_tasks and _verify_tasks[task_key]["status"] == "done":
+        return {"task_key": task_key, "status": "done", **_verify_tasks[task_key]["result"]}
+
+    if task_key not in _verify_tasks:
+        _verify_tasks[task_key] = {"status": "pending", "result": None}
+        t = threading.Thread(target=_run_deep_verify, args=(task_key, req.job_title, req.company), daemon=True)
+        t.start()
+        print(f"[ScamShield] Deep verify started: {req.job_title} @ {req.company}")
+
+    return {"task_key": task_key, "status": "pending"}
+
+
+@app.get("/verify_status/{task_key:path}")
+def get_verify_status(task_key: str):
+    """Poll this endpoint after calling /verify. Returns status + result when done."""
+    task = _verify_tasks.get(task_key)
+    if not task:
+        return {"status": "not_found"}
+    if task["status"] == "pending":
+        return {"task_key": task_key, "status": "pending"}
+    return {"task_key": task_key, "status": "done", **task["result"]}
+
 
 if __name__ == "__main__":
     import uvicorn

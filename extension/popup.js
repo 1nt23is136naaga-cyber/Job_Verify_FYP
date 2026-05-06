@@ -134,6 +134,12 @@ async function runAnalysis(text, metadata, imageData = []) {
     }
     
     renderResults(data);
+
+    // Auto-trigger deep verification (scraper2.py — 14 platforms + Google + Careers)
+    const dvBanner = document.getElementById('deep-verify-banner');
+    if (dvBanner) { dvBanner.style.display = 'none'; dvBanner.textContent = ''; }
+    startDeepVerify(data.job_title, data.company);
+
   } catch (err) {
     showError(`Failed to connect to the backend.\n\nMake sure the server is running:\n→ python -m uvicorn api:app --port 8000\n\n${err.message}`);
   }
@@ -309,6 +315,56 @@ function showIdle() {
   document.getElementById('fb-safe').classList.remove('selected');
   document.getElementById('fb-scam').classList.remove('selected');
   currentJobId = null;
+}
+
+// ── Deep Verify via scraper2.py ───────────────────────────────────────────────
+async function startDeepVerify(jobTitle, company) {
+  if (!jobTitle || !company) return;
+  const banner = document.getElementById('deep-verify-banner');
+  if (!banner) return;
+  banner.innerHTML = '🔍 Deep verifying across 14 platforms… <span style="opacity:0.6">(30–90 sec)</span>';
+  banner.style.display = 'block';
+  banner.style.background = '#1e3a5f';
+  banner.style.color = '#90caf9';
+
+  try {
+    const res = await fetch(`${API_URL}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_title: jobTitle, company: company })
+    });
+    const data = await res.json();
+    const taskKey = data.task_key;
+    if (!taskKey) return;
+
+    // Poll every 5 seconds for up to 3 minutes
+    let attempts = 0;
+    const poller = setInterval(async () => {
+      attempts++;
+      if (attempts > 36) { clearInterval(poller); banner.textContent = '⏱ Deep verify timed out.'; return; }
+      try {
+        const poll = await fetch(`${API_URL}/verify_status/${encodeURIComponent(taskKey)}`);
+        const result = await poll.json();
+        if (result.status === 'done') {
+          clearInterval(poller);
+          const colorMap = { green: '#2e7d32', orange: '#e65100', red: '#b71c1c', grey: '#555' };
+          banner.style.background = colorMap[result.color] || '#333';
+          banner.style.color = '#fff';
+          const confirmed = result.confirmed_on?.join(', ') || 'None';
+          const notFound  = result.not_found_on?.join(', ') || 'None';
+          banner.innerHTML =
+            `<strong>🔍 Deep Verify: ${result.verdict}</strong><br>` +
+            `✅ Found on: ${confirmed}<br>` +
+            `❌ Not found: ${notFound}` +
+            (result.careers_url ? `<br>🏢 Careers: <a href="${result.careers_url}" target="_blank" style="color:#90caf9">${result.careers_url}</a>` : '') +
+            (result.time_taken ? `<br><small style="opacity:0.7">⏱ ${result.time_taken.toFixed(1)}s</small>` : '');
+        }
+      } catch(e) { /* keep polling */ }
+    }, 5000);
+
+  } catch(e) {
+    banner.textContent = '⚠️ Deep verify unavailable.';
+  }
 }
 
 function showLoading() {
