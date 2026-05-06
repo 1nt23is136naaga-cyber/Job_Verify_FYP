@@ -33,6 +33,15 @@ def save_job(raw_text, score_initial):
     conn.close()
     return job_id
 
+def get_duplicate_count(raw_text):
+    """Returns how many times this exact text has been scanned before."""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('SELECT COUNT(*) FROM jobs WHERE raw_text = ?', (raw_text,))
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
 def submit_feedback(job_id, is_scam):
     """Updates a job with a ground-truth label (1 for scam, 0 for safe) and retrains the ML model."""
     label = 1 if is_scam else 0

@@ -20,8 +20,17 @@
     <div class="status-dot" id="status-dot" title="API Connected"></div>
   </div>
 
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active" id="tab-scan">🔍 Scan</div>
+    <div class="tab" id="tab-history">📋 History</div>
+  </div>
+
   <!-- MAIN CONTENT -->
   <div class="main">
+
+    <!-- SCANNER WRAPPER -->
+    <div id="scanner-wrapper">
 
     <!-- IDLE STATE -->
     <div id="idle-state">
@@ -64,7 +73,7 @@
           </svg>
           <div class="score-inner">
             <div class="score-number" id="score-number">0</div>
-            <div class="score-label">/ 100</div>
+            <div class="score-label">Trust Score</div>
           </div>
         </div>
         <div class="verdict-text" id="verdict-text">Analyzing...</div>
@@ -101,8 +110,8 @@
       <div class="feedback-section" id="feedback-section">
         <div class="section-title">Was this accurate?</div>
         <div class="feedback-btns">
-          <button class="fb-btn fb-safe" id="fb-safe">✅ Genuine</button>
-          <button class="fb-btn fb-scam" id="fb-scam">🚨 It's a Scam</button>
+          <button class="fb-btn fb-safe" id="fb-safe">✅ Looks Genuine</button>
+          <button class="fb-btn fb-scam" id="fb-scam">🚨 Likely a Scam</button>
         </div>
         <div class="feedback-thanks hidden" id="feedback-thanks">Thanks! Model updated 🎯</div>
       </div>
@@ -117,6 +126,19 @@
       <div class="error-icon">⚠️</div>
       <div class="error-msg" id="error-msg">Something went wrong.</div>
       <button class="reanalyze-btn" id="retry-btn">Try Again</button>
+    </div>
+
+    </div> <!-- END SCANNER WRAPPER -->
+
+    <!-- HISTORY STATE -->
+    <div id="history-state" class="hidden">
+      <div class="history-header">
+        <h3 style="margin:0; font-size:14px; font-weight:600;">Recent Scans</h3>
+        <button id="clear-history-btn" style="background:none; border:none; color:#aaa; cursor:pointer; font-size:12px; text-decoration:underline;">Clear</button>
+      </div>
+      <div id="history-list" class="history-list">
+        <!-- History items injected here -->
+      </div>
     </div>
 
   </div>
