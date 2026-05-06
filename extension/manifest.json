@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "ScamShield — AI Job Scam Detector",
+  "version": "2.0",
+  "description": "One-click AI-powered job scam detector for LinkedIn and Gmail. Analyze any job post instantly.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "*://www.linkedin.com/*",
+    "*://mail.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://www.linkedin.com/*", "*://mail.google.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}

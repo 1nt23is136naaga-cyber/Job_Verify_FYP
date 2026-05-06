@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Job Scam Detector</title>
+  <link rel="stylesheet" href="popup.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">🛡️</div>
+      <div class="logo-text">
+        <span class="logo-title">ScamShield</span>
+        <span class="logo-sub">AI Job Scam Detector</span>
+      </div>
+    </div>
+    <div class="status-dot" id="status-dot" title="API Connected"></div>
+  </div>
+
+  <!-- MAIN CONTENT -->
+  <div class="main">
+
+    <!-- IDLE STATE -->
+    <div id="idle-state">
+      <div class="site-badge" id="site-badge">🔍 Detecting page...</div>
+      <button id="analyze-btn" class="analyze-btn">
+        <span class="btn-icon">⚡</span>
+        <span>Analyze Now</span>
+      </button>
+      <!-- Manual input fallback -->
+      <div class="manual-section">
+        <div class="manual-label">Or paste text manually</div>
+        <textarea id="manual-text" placeholder="Paste job description here..."></textarea>
+        <button id="manual-btn" class="manual-btn">Analyze Pasted Text</button>
+      </div>
+    </div>
+
+    <!-- LOADING STATE -->
+    <div id="loading-state" class="hidden">
+      <div class="loader-wrapper">
+        <div class="loader-ring"></div>
+        <div class="loader-text">Analyzing...</div>
+      </div>
+      <div class="loader-steps">
+        <div class="step active" id="step-1">📡 Extracting content</div>
+        <div class="step" id="step-2">🔬 Running AI analysis</div>
+        <div class="step" id="step-3">📊 Computing risk score</div>
+      </div>
+    </div>
+
+    <!-- RESULTS STATE -->
+    <div id="results-state" class="hidden">
+
+      <!-- Score Ring -->
+      <div class="score-section">
+        <div class="score-ring-wrapper">
+          <svg class="score-ring" viewBox="0 0 120 120">
+            <circle class="ring-bg" cx="60" cy="60" r="50"/>
+            <circle class="ring-fill" id="ring-fill" cx="60" cy="60" r="50"
+              stroke-dasharray="314" stroke-dashoffset="314"/>
+          </svg>
+          <div class="score-inner">
+            <div class="score-number" id="score-number">0</div>
+            <div class="score-label">/ 100</div>
+          </div>
+        </div>
+        <div class="verdict-text" id="verdict-text">Analyzing...</div>
+        <div class="verdict-sub" id="verdict-sub">—</div>
+      </div>
+
+      <!-- Extracted Info -->
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="info-label">Company</div>
+          <div class="info-value" id="res-company">—</div>
+        </div>
+        <div class="info-card">
+          <div class="info-label">Recruiter</div>
+          <div class="info-value" id="res-recruiter">—</div>
+        </div>
+        <div class="info-card">
+          <div class="info-label">Email</div>
+          <div class="info-value" id="res-email">—</div>
+        </div>
+        <div class="info-card">
+          <div class="info-label">Job Title</div>
+          <div class="info-value" id="res-title">—</div>
+        </div>
+      </div>
+
+      <!-- Risk Factors -->
+      <div class="risk-section" id="risk-section">
+        <div class="section-title">⚠️ Risk Signals</div>
+        <div class="risk-pills" id="risk-pills"></div>
+      </div>
+
+      <!-- Feedback -->
+      <div class="feedback-section" id="feedback-section">
+        <div class="section-title">Was this accurate?</div>
+        <div class="feedback-btns">
+          <button class="fb-btn fb-safe" id="fb-safe">✅ Genuine</button>
+          <button class="fb-btn fb-scam" id="fb-scam">🚨 It's a Scam</button>
+        </div>
+        <div class="feedback-thanks hidden" id="feedback-thanks">Thanks! Model updated 🎯</div>
+      </div>
+
+      <!-- Re-analyze -->
+      <button class="reanalyze-btn" id="reanalyze-btn">↩ Analyze Again</button>
+
+    </div>
+
+    <!-- ERROR STATE -->
+    <div id="error-state" class="hidden">
+      <div class="error-icon">⚠️</div>
+      <div class="error-msg" id="error-msg">Something went wrong.</div>
+      <button class="reanalyze-btn" id="retry-btn">Try Again</button>
+    </div>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
