@@ -985,7 +985,15 @@ def analyze_job(req: AnalyzeRequest):
     # Metadata overrides/hints
     meta = req.metadata or {}
     company = meta.get("company") or ner["company"] or "Unknown"
-    recruiter = meta.get("poster_name") or ner["recruiter_name"] or "Unknown"
+
+    # Recruiter: ONLY use metadata poster_name if metadata was provided.
+    # If metadata was provided but poster_name is empty, it means no hiring card
+    # was found — do NOT fall back to NLP which picks up investor/company names.
+    if meta:
+        recruiter = meta.get("poster_name") or "Not listed"
+    else:
+        recruiter = ner["recruiter_name"] or "Unknown"
+
     job_title = meta.get("title") or extract_job_title(raw_text, company)
     salary_mention = ner["salary_mention"]
     

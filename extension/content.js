@@ -93,117 +93,204 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     };
 
     if (host.includes('linkedin.com')) {
-      // Step 1: Auto-scroll to trigger lazy-loaded content
-      await autoScrollJobPage();
+      const lnPath = window.location.pathname;
 
-      // Step 2: Find the active job detail panel — ONLY read from this container.
-      // On search results pages there are many job cards; we must scope to the active one.
-      const detailPanel =
-        document.querySelector('.jobs-search__job-details') ||    // search results right panel
-        document.querySelector('.jobs-details')             ||    // alternate search detail
-        document.querySelector('.job-view-layout')          ||    // direct job page
-        document.querySelector('main');                           // fallback
+      if (lnPath.includes('/jobs/')) {
+        // ── LinkedIn Job Listing (/jobs/view/ or /jobs/search/) ─────────────
+        // Step 1: Auto-scroll to trigger lazy-loaded content
+        await autoScrollJobPage();
 
-      // Scoped getText — searches only inside detailPanel
-      const getScopedText = (root, ...selectors) => {
-        for (const sel of selectors) {
-          try {
-            const el = root.querySelector(sel);
-            if (el && el.innerText.trim()) return el.innerText.trim();
-          } catch(e) {}
-        }
+        // ── Step 2: Identify the active job detail panel ───────────────────
+        const detailPanel =
+        document.querySelector('.jobs-search__job-details') ||
+        document.querySelector('.jobs-details')             ||
+        document.querySelector('.job-view-layout')          ||
+        document.querySelector('main');
+
+      // Scoped querySelector helper — only looks inside detailPanel
+      const $ = (sel) => { try { return detailPanel.querySelector(sel); } catch(e){ return null; } };
+      const $t = (...sels) => {
+        for (const s of sels) { const el = $(s); if (el?.innerText?.trim()) return el.innerText.trim(); }
         return '';
       };
 
-      const metadata = {
-        company: getScopedText(detailPanel,
+      // ── Step 3: Extract company name ──────────────────────────────────────
+      // MOST RELIABLE: page title format is "Job Title | Company | LinkedIn"
+      let company = '';
+      const titleParts = document.title.split('|').map(p => p.trim());
+      if (titleParts.length >= 3) {
+        // Last part is "LinkedIn", second-to-last is company
+        const candidate = titleParts[titleParts.length - 2];
+        if (candidate && candidate.toLowerCase() !== 'linkedin') company = candidate;
+      }
+      // CSS fallback if title parsing failed
+      if (!company) {
+        company = $t(
           '.job-details-jobs-unified-top-card__company-name a',
           '.job-details-jobs-unified-top-card__company-name',
           '.jobs-unified-top-card__company-name a',
           '.jobs-unified-top-card__company-name',
-          '.jobs-details-top-card__company-url',
-          '[data-tracking-control-name="public_jobs_topcard-org-name"]'
-        ),
-        title: getScopedText(detailPanel,
-          '.job-details-jobs-unified-top-card__job-title h1',
-          '.job-details-jobs-unified-top-card__job-title',
-          '.jobs-unified-top-card__job-title h1',
-          '.jobs-unified-top-card__job-title',
-          'h1.t-24', 'h1'
-        ),
-        poster_name: getScopedText(detailPanel,
-          '.hirer-card__hirer-information .app-aware-link',
-          '.jobs-poster__name',
-          '.jobs-poster__name-container',
-          '.jobs-hiring-team-widget__hiring-manager-name'
-        ),
-        poster_headline: getScopedText(detailPanel,
-          '.hirer-card__hirer-information .jobs-poster__headline',
-          '.jobs-poster__headline',
-          '.jobs-hiring-team-widget__hiring-manager-title'
-        ),
+          '.jobs-details-top-card__company-url'
+        );
+      }
+
+      // ── Step 4: Extract job title ─────────────────────────────────────────
+      // Title format sometimes: "Company Name · Job Title" — clean it
+      let jobTitle = $t(
+        '.job-details-jobs-unified-top-card__job-title h1',
+        '.job-details-jobs-unified-top-card__job-title',
+        '.jobs-unified-top-card__job-title h1',
+        '.jobs-unified-top-card__job-title',
+        'h1.t-24', 'h1'
+      );
+      // Remove leading "Company ·" or "Company -" prefix if present
+      if (company && jobTitle.toLowerCase().startsWith(company.toLowerCase())) {
+        jobTitle = jobTitle.slice(company.length).replace(/^[\s·\-–—]+/, '').trim();
+      }
+
+      // ── Step 5: Extract recruiter — STRICTLY from hiring team card only ───
+      // The .jobs-poster section is specifically the hiring manager card.
+      // Do NOT use general name selectors that catch investor/about-company names.
+      const posterCard =
+        detailPanel.querySelector('.hirer-card__hirer-information') ||
+        detailPanel.querySelector('.jobs-poster')                   ||
+        detailPanel.querySelector('.jobs-hiring-team-widget');
+
+      const posterName = posterCard
+        ? (posterCard.querySelector('.app-aware-link, .jobs-poster__name, .jobs-hiring-team-widget__hiring-manager-name')?.innerText?.trim() || '')
+        : '';
+
+      const posterHeadline = posterCard
+        ? (posterCard.querySelector('.jobs-poster__headline, .jobs-hiring-team-widget__hiring-manager-title')?.innerText?.trim() || '')
+        : '';
+
+      const posterUrl = (posterCard?.querySelector('a')?.getAttribute('href') || '').split('?')[0];
+
+      // ── Step 6: Other metadata ────────────────────────────────────────────
+      const metadata = {
+        company,
+        title: jobTitle,
+        poster_name:      posterName,
+        poster_headline:  posterHeadline,
+        poster_url:       posterUrl,
         is_poster_verified: !!detailPanel.querySelector(
-          '.jobs-poster__name-container .verified-badge, .jobs-hiring-team-widget__hiring-manager [aria-label*="Verified"]'
+          '.jobs-poster__name-container .verified-badge, [aria-label*="Verified"]'
         ),
-        poster_url: (
-          detailPanel.querySelector('.hirer-card__hirer-information a, .jobs-poster__name-link, .jobs-poster__name-container a')?.getAttribute('href') || ''
-        ).split('?')[0],
-        company_url: (
-          detailPanel.querySelector('.job-details-jobs-unified-top-card__company-name a, .jobs-unified-top-card__company-name a')?.getAttribute('href') || ''
-        ).split('?')[0],
-        location: getScopedText(detailPanel,
+        company_url: ($('.job-details-jobs-unified-top-card__company-name a, .jobs-unified-top-card__company-name a')?.getAttribute('href') || '').split('?')[0],
+        location: $t(
           '.job-details-jobs-unified-top-card__primary-description-without-tagline span',
           '.jobs-unified-top-card__bullet',
           '.jobs-details-top-card__bullet'
         ),
-        applicants: getScopedText(detailPanel,
-          '.jobs-unified-top-card__applicant-count',
-          '.job-details-jobs-unified-top-card__job-insight span'
-        ),
-        is_promoted: !!detailPanel.querySelector(
-          '.jobs-unified-top-card__promoted-status, .jobs-details-top-card__promoted-status'
-        ),
-        company_size:     getScopedText(detailPanel, '.jobs-company__inline-information', '.jobs-details-top-card__company-info'),
-        company_industry: getScopedText(detailPanel, '.jobs-company__inline-information + .jobs-company__inline-information'),
-        company_followers: getScopedText(detailPanel,
-          '.job-details-jobs-unified-top-card__company-name + span',
-          '.jobs-unified-top-card__company-name + span',
-          '.jobs-company__inline-information--job-details span'
-        ),
-        hiring_stats: getScopedText(detailPanel,
-          '.jobs-poster__hirer-context',
-          '.hirer-card__hirer-information .jobs-poster__hirer-context',
-          '.jobs-hiring-team-widget__hirer-context'
-        )
+        applicants:  $t('.jobs-unified-top-card__applicant-count', '.job-details-jobs-unified-top-card__job-insight span'),
+        is_promoted: !!$('.jobs-unified-top-card__promoted-status'),
+        company_size:     $t('.jobs-company__inline-information', '.jobs-details-top-card__company-info'),
+        company_industry: $t('.jobs-company__inline-information + .jobs-company__inline-information'),
+        hiring_stats:     $t('.jobs-poster__hirer-context', '.jobs-hiring-team-widget__hirer-context')
       };
-      console.log('ScamShield Extracted Metadata (scoped to detail panel):', metadata);
 
-      // Step 3: Extract text from the active job detail panel only
-      const descSelectors = [
-        '#job-details',
-        '.jobs-description__container',
-        '.jobs-description',
-      ];
-      let bestMatch = '';
-      for (const sel of descSelectors) {
-        const el = detailPanel.querySelector(sel);
-        if (el && el.innerText.trim().length > bestMatch.length) {
-          bestMatch = el.innerText.trim();
-        }
-        if (bestMatch.length > 250) break;
-      }
-      // Fallback: full detail panel text (but NOT entire body to avoid bleeding)
-      extractedText = bestMatch || detailPanel.innerText || '';
+      console.log('ScamShield metadata:', metadata);
 
-      // Step 4: Capture images from the job post area
+      // ── Step 7: Extract job description text (scoped to detail panel) ─────
+      const descEl =
+        detailPanel.querySelector('#job-details') ||
+        detailPanel.querySelector('.jobs-description__container') ||
+        detailPanel.querySelector('.jobs-description');
+      extractedText = descEl ? descEl.innerText.trim() : (detailPanel.innerText || '');
+
+      // ── Step 8: Capture images ────────────────────────────────────────────
       const images = captureJobImages();
       const imageUrls = images.map(i => i.src);
       const imageDataUrls = images.filter(i => i.dataUrl).map(i => i.dataUrl);
 
-      console.log(`ScamShield: captured ${images.length} images from job post`);
-
-      sendResponse({ text: extractedText, metadata: metadata, image_urls: imageUrls, image_data: imageDataUrls });
+      sendResponse({ text: extractedText, metadata, image_urls: imageUrls, image_data: imageDataUrls });
       return;
+
+      } else {
+      // ── LinkedIn Feed Post / Profile Post / Share URL ───────────────────
+      // Handles URLs like: /feed/, /posts/..., /in/username/recent-activity/
+      // Many "hiring" announcements are regular posts — sometimes image-only.
+      const path = window.location.pathname;
+      const isPostPage = path.includes('/posts/') || path.includes('/feed/') || path.includes('/recent-activity/');
+
+      // Find the focused post — on a post detail page it's the main article,
+      // on the feed we pick the most visible post in the viewport.
+      let focusedPost = null;
+
+      // Post detail page: there's usually one main post
+      focusedPost =
+        document.querySelector('.feed-shared-update-v2--highlight') ||
+        document.querySelector('article[data-urn]')                 ||
+        document.querySelector('.update-components-actor')?.closest('[data-urn]') ||
+        document.querySelector('.feed-shared-update-v2');
+
+      // If not found (feed list), pick the post most visible in viewport
+      if (!focusedPost) {
+        const posts = Array.from(document.querySelectorAll('.feed-shared-update-v2, article[data-id]'));
+        let bestVis = 0;
+        for (const post of posts) {
+          const rect = post.getBoundingClientRect();
+          const vis = Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0);
+          if (vis > bestVis) { bestVis = vis; focusedPost = post; }
+        }
+      }
+
+      if (!focusedPost) {
+        sendResponse({ text: document.body.innerText.slice(0, 3000) });
+        return;
+      }
+
+      // Author / poster name
+      const authorEl = focusedPost.querySelector(
+        '.update-components-actor__name span[aria-hidden="true"], .feed-shared-actor__name, .update-components-actor__name'
+      );
+      const authorName = authorEl?.innerText?.trim() || '';
+
+      const authorSubEl = focusedPost.querySelector(
+        '.update-components-actor__description, .feed-shared-actor__description'
+      );
+      const authorSub = authorSubEl?.innerText?.trim() || '';
+
+      // Post text
+      const textEl = focusedPost.querySelector(
+        '.update-components-text, .feed-shared-text, .attributed-text-segment-list__content'
+      );
+      extractedText = textEl?.innerText?.trim() || focusedPost.innerText?.trim() || '';
+
+      // Post images — CRITICAL for image-flyer hiring posts
+      const postImgEls = Array.from(focusedPost.querySelectorAll('img, .update-components-image__image'))
+        .filter(img => {
+          const w = img.naturalWidth || img.width;
+          const h = img.naturalHeight || img.height;
+          return img.src && !img.src.startsWith('data:') && w > 100 && h > 100 &&
+                 !img.src.includes('profile') && !img.src.includes('avatar') && !img.src.includes('icon');
+        }).slice(0, 4);
+
+      const postImageDataUrls = [];
+      const postImageUrls = postImgEls.map(img => img.src);
+
+      for (const img of postImgEls) {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          canvas.getContext('2d').drawImage(img, 0, 0);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          if (dataUrl && dataUrl.length > 100) postImageDataUrls.push(dataUrl);
+        } catch(e) { /* cross-origin — skip canvas but URL is captured */ }
+      }
+
+      const postMeta = {
+        poster_name: authorName,
+        poster_headline: authorSub,
+        source_type: 'linkedin_post',
+        has_images: postImgEls.length > 0
+      };
+
+      console.log(`ScamShield: LinkedIn post — author="${authorName}", images=${postImgEls.length}, text=${extractedText.length} chars`);
+      sendResponse({ text: extractedText, metadata: postMeta, image_urls: postImageUrls, image_data: postImageDataUrls });
+      return;
+      } // end else (post page)
 
     } else if (host.includes('mail.google.com')) {
       // Gmail — extract email body + sender metadata
