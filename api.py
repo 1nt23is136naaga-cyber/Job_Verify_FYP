@@ -12,6 +12,20 @@ import spacy
 import json
 import os
 from functools import lru_cache
+from dotenv import load_dotenv
+from openai import OpenAI
+
+# Load .env for API key
+load_dotenv()
+_openai_client = None
+
+def get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key:
+            _openai_client = OpenAI(api_key=api_key)
+    return _openai_client
 
 # Load spaCy
 try:
@@ -254,6 +268,65 @@ def check_mx_records(domain):
     except Exception:
         return False
 
+# ── GPT-4o MINI ANALYSIS ─────────────────────────────────────────────────────
+
+def analyze_with_gpt(job_text: str, source: str, company: str, recruiter: str) -> dict:
+    """
+    Uses GPT-4o Mini to evaluate the job posting and return a structured
+    scam risk assessment with a score (0-100) and short reasoning.
+    Returns None if GPT is unavailable.
+    """
+    client = get_openai_client()
+    if not client:
+        return None
+
+    # Truncate to keep costs low (max ~2000 chars)
+    truncated = job_text[:2000]
+
+    system_prompt = """You are an expert job scam detection AI. You will be given a job posting from a specific platform and must evaluate whether it is genuine or a scam.
+
+Respond ONLY with a valid JSON object in this exact format:
+{
+  "scam_score": <integer 0-100>,
+  "reasoning": "<one sentence explaining your verdict>",
+  "red_flags": ["<flag1>", "<flag2>"]
+}
+
+Scoring guide:
+- 0-39: Likely genuine
+- 40-65: Suspicious, needs caution
+- 66-100: High probability scam
+
+Consider: unrealistic pay, vague job details, pressure tactics, requests for money/deposits, generic company descriptions, and mismatched professional language."""
+
+    user_prompt = f"""Platform: {source}
+Company: {company}
+Poster: {recruiter}
+
+Job Posting Text:
+{truncated}"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.2,
+            max_tokens=300,
+            response_format={"type": "json_object"}
+        )
+        result = json.loads(response.choices[0].message.content)
+        return {
+            "score": max(0, min(100, int(result.get("scam_score", 50)))),
+            "reasoning": result.get("reasoning", ""),
+            "red_flags": result.get("red_flags", [])
+        }
+    except Exception as e:
+        print(f"GPT Analysis Error: {e}")
+        return None
+
 # ── SCORING ENGINE ───────────────────────────────────────────────────────────
 
 @app.post("/analyze")
@@ -445,16 +518,39 @@ def analyze_job(req: AnalyzeRequest):
         
         # Average the ML score to prevent false positives from generic ML uncertainty
         if ml_score > 75:
-            # Highly confident ML prediction gets more weight
             final_score = int((score * 0.3) + (ml_score * 0.7))
             risk_factors.append("ML model heavily weighted due to high confidence (>75%)")
         else:
-            # Normal averaging
             final_score = int((score * 0.5) + (ml_score * 0.5))
     else:
         final_score = score
         
     final_score = max(0, min(final_score, 100))
+    
+    # 6. GPT-4o MINI ANALYSIS
+    gpt_result = analyze_with_gpt(raw_text, source, company, recruiter)
+    gpt_score = None
+    gpt_reasoning = None
+    gpt_red_flags = []
+    
+    if gpt_result:
+        gpt_score = gpt_result["score"]
+        gpt_reasoning = gpt_result["reasoning"]
+        gpt_red_flags = gpt_result["red_flags"]
+        
+        risk_factors.append(f"🤖 GPT-4o Mini Score: {gpt_score}/100 — {gpt_reasoning}")
+        for flag in gpt_red_flags:
+            risk_factors.append(f"🚩 GPT Flag: {flag}")
+        
+        # Blend GPT score: 40% GPT, 60% existing combined score
+        # If GPT is highly confident either way, give it more weight
+        if gpt_score >= 75 or gpt_score <= 20:
+            final_score = int((final_score * 0.4) + (gpt_score * 0.6))
+            risk_factors.append("GPT-4o Mini confidence is high — weighted heavily in final verdict")
+        else:
+            final_score = int((final_score * 0.6) + (gpt_score * 0.4))
+        
+        final_score = max(0, min(final_score, 100))
     
     # Verdict
     if final_score < 40:
@@ -479,6 +575,8 @@ def analyze_job(req: AnalyzeRequest):
         "risk_score": final_score,
         "rules_score_base": score,
         "ml_probability": ml_prob,
+        "gpt_score": gpt_score,
+        "gpt_reasoning": gpt_reasoning,
         "verdict": verdict,
         "color": color,
         "scam_keywords": scam_keywords,
