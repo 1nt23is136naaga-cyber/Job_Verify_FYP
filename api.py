@@ -98,8 +98,7 @@ SCAM_KEYWORDS = [
     "no experience needed", "work from home and earn",
     "guaranteed income", "unlimited earnings", "passive income",
     "$500 weekly", "$1000 weekly", "$2000 weekly", "daily payment", "daily income",
-    "urgent hiring", "immediate joining", "apply now", "limited slots",
-    "hurry", "act fast", "only a few spots left", "immediate requirement",
+    "limited slots", "hurry", "act fast", "only a few spots left",
     "registration fee", "processing fee", "training fee", "pay to apply",
     "refundable deposit", "send money", "western union", "wire transfer",
     "training kit", "security deposit", "bitcoin payment", "crypto payment",
@@ -328,7 +327,10 @@ def analyze_job(req: AnalyzeRequest):
             score += penalty
             risk_factors.append(f"Anonymous posting: No recruiter profile provided (+{penalty})")
         elif poster_url:
-            if "linkedin.com/in/" not in poster_url and "linkedin.com/company/" not in poster_url:
+            if "linkedin.com/in/" in poster_url:
+                score -= 15
+                risk_factors.append("Valid LinkedIn Profile Attached (-15)")
+            elif "linkedin.com/company/" not in poster_url:
                 score += 40
                 risk_factors.append(f"External/Suspicious poster URL detected: {poster_url} (+40)")
         
@@ -348,7 +350,10 @@ def analyze_job(req: AnalyzeRequest):
         nlp_company = ner["company"]
         if nlp_company and company != "Unknown" and nlp_company.lower() != company.lower():
             from difflib import SequenceMatcher
-            if SequenceMatcher(None, nlp_company.lower(), company.lower()).ratio() < 0.5:
+            # Forgive third-party recruiters based on headline
+            if any(k in headline for k in ["recruiter", "talent", "staffing", "acquisition", "sourcer", "hiring"]):
+                risk_factors.append(f"Third-Party Recruiter detected: Ignoring company name mismatch for '{nlp_company}'")
+            elif SequenceMatcher(None, nlp_company.lower(), company.lower()).ratio() < 0.5:
                 penalty = 5 if is_trusted_brand else 15
                 score += penalty
                 risk_factors.append(f"Company name mismatch: Page says '{company}', text says '{nlp_company}' (+{penalty})")
@@ -438,20 +443,21 @@ def analyze_job(req: AnalyzeRequest):
         ml_score = int(ml_prob * 100)
         risk_factors.append(f"Machine Learning Model scam probability: {ml_score}%")
         
-        # Adaptive weight: if rules score is very low, trust ML less (prevent false positives)
-        if score < 20 and ml_score > 60:
-            final_score = int((score * 0.7) + (ml_score * 0.3))
-            risk_factors.append("ML model overridden by strong legitimacy rules")
+        # Average the ML score to prevent false positives from generic ML uncertainty
+        if ml_score > 75:
+            # Highly confident ML prediction gets more weight
+            final_score = int((score * 0.3) + (ml_score * 0.7))
+            risk_factors.append("ML model heavily weighted due to high confidence (>75%)")
         else:
-            # ML model has independent veto power if it detects a high-confidence scam
-            final_score = max(ml_score, int((score * 0.5) + (ml_score * 0.5)))
+            # Normal averaging
+            final_score = int((score * 0.5) + (ml_score * 0.5))
     else:
         final_score = score
         
     final_score = max(0, min(final_score, 100))
     
     # Verdict
-    if final_score < 30:
+    if final_score < 40:
         verdict = "✅ Likely Genuine"
         color = "green"
     elif final_score <= 65:
