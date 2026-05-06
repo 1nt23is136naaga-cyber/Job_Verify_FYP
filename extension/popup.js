@@ -44,20 +44,100 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 });
 
+// Pending extraction data (held between scrape and confirm)
+let _pending = null;
+
 // ── Analyze from page ─────────────────────────────────────────────────────────
 document.getElementById('analyze-btn').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  showLoading();
 
-  setStep(1);
+  // Show a brief "extracting…" loading pulse on the idle state button
+  const btn = document.getElementById('analyze-btn');
+  btn.disabled = true;
+  btn.querySelector('span:last-child').textContent = 'Extracting…';
+
   chrome.tabs.sendMessage(tab.id, { action: 'extract_text' }, async (response) => {
+    btn.disabled = false;
+    btn.querySelector('span:last-child').textContent = 'Analyze Now';
+
     if (chrome.runtime.lastError || !response || !response.text || response.text.trim().length < 20) {
       showError('Could not extract text from this page.\n\nTry using the manual paste box below.');
       return;
     }
-    setStep(2);
-    await runAnalysis(response.text, response.metadata || {}, response.image_data || []);
+
+    // Store pending extraction
+    _pending = {
+      text:      response.text,
+      metadata:  response.metadata || {},
+      imageData: response.image_data || [],
+      imageUrls: response.image_urls || []
+    };
+
+    showConfirm(_pending);
   });
+});
+
+// ── Confirm state: user reviews scraped data ──────────────────────────────────
+function showConfirm(pending) {
+  const meta = pending.metadata || {};
+
+  // Populate editable fields
+  document.getElementById('confirm-company').value   = meta.company        || meta.title?.split('|')[1]?.trim() || '';
+  document.getElementById('confirm-recruiter').value = meta.poster_name    || '';
+  document.getElementById('confirm-title').value     = meta.title          || '';
+
+  // Poster bio/headline
+  const bioRow = document.getElementById('confirm-bio-row');
+  const bioEl  = document.getElementById('confirm-bio');
+  if (meta.poster_headline) {
+    bioEl.textContent = meta.poster_headline;
+    bioRow.style.display = 'flex';
+  } else {
+    bioRow.style.display = 'none';
+  }
+
+  // Text preview (first 250 chars)
+  document.getElementById('confirm-text-preview').textContent =
+    pending.text.trim().slice(0, 250) + (pending.text.length > 250 ? '…' : '');
+
+  // Images count
+  const imgRow = document.getElementById('confirm-images-row');
+  if (pending.imageData.length > 0 || pending.imageUrls.length > 0) {
+    const total = Math.max(pending.imageData.length, pending.imageUrls.length);
+    document.getElementById('confirm-images-count').textContent =
+      `${total} image(s) captured — will be OCR'd by Gemini Vision ✅`;
+    imgRow.style.display = 'flex';
+  } else {
+    imgRow.style.display = 'none';
+  }
+
+  // Show confirm panel
+  idleState.classList.add('hidden');
+  loadingState.classList.add('hidden');
+  resultsState.classList.add('hidden');
+  errorState.classList.add('hidden');
+  document.getElementById('confirm-state').classList.remove('hidden');
+}
+
+// Confirm & Analyze
+document.getElementById('confirm-btn').addEventListener('click', async () => {
+  if (!_pending) return;
+
+  // Read back any edits the user made to the fields
+  _pending.metadata.company     = document.getElementById('confirm-company').value.trim()   || _pending.metadata.company;
+  _pending.metadata.poster_name = document.getElementById('confirm-recruiter').value.trim() || _pending.metadata.poster_name;
+  _pending.metadata.title       = document.getElementById('confirm-title').value.trim()     || _pending.metadata.title;
+
+  document.getElementById('confirm-state').classList.add('hidden');
+  showLoading();
+  setStep(1);
+  await runAnalysis(_pending.text, _pending.metadata, _pending.imageData);
+});
+
+// Back to idle
+document.getElementById('confirm-back-btn').addEventListener('click', () => {
+  document.getElementById('confirm-state').classList.add('hidden');
+  showIdle();
 });
 
 // ── Analyze from manual textarea ─────────────────────────────────────────────
@@ -79,6 +159,7 @@ document.getElementById('reanalyze-btn').addEventListener('click', () => {
 document.getElementById('retry-btn').addEventListener('click', () => {
   showIdle();
 });
+
 
 // ── Full Scan (analyze + deep scraper → one final result) ────────────────────
 const PHASE_LABELS = {
@@ -354,10 +435,12 @@ function showIdle() {
   loadingState.classList.add('hidden');
   resultsState.classList.add('hidden');
   errorState.classList.add('hidden');
+  document.getElementById('confirm-state').classList.add('hidden');
   document.getElementById('feedback-thanks').classList.add('hidden');
   document.getElementById('fb-safe').classList.remove('selected');
   document.getElementById('fb-scam').classList.remove('selected');
   currentJobId = null;
+  _pending = null;
 }
 
 // ── Deep Verify via scraper2.py ───────────────────────────────────────────────

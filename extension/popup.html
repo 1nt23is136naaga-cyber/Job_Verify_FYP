@@ -47,6 +47,42 @@
       </div>
     </div>
 
+    <!-- CONFIRM STATE — shown after scraping so user can verify the data -->
+    <div id="confirm-state" class="hidden">
+      <div class="section-title" style="margin-bottom:10px;">📋 Confirm Scraped Data</div>
+      <div style="font-size:11px;color:#aaa;margin-bottom:8px;">Is this the correct post/job? Verify before scanning.</div>
+
+      <div class="confirm-row">
+        <span class="confirm-label">🏢 Company</span>
+        <input id="confirm-company" class="confirm-input" type="text" placeholder="Company name…">
+      </div>
+      <div class="confirm-row">
+        <span class="confirm-label">👤 Recruiter</span>
+        <input id="confirm-recruiter" class="confirm-input" type="text" placeholder="Recruiter name…">
+      </div>
+      <div class="confirm-row">
+        <span class="confirm-label">💼 Role</span>
+        <input id="confirm-title" class="confirm-input" type="text" placeholder="Job title…">
+      </div>
+      <div class="confirm-row" id="confirm-bio-row" style="display:none">
+        <span class="confirm-label">📝 Poster bio</span>
+        <span id="confirm-bio" class="confirm-value"></span>
+      </div>
+      <div class="confirm-row">
+        <span class="confirm-label">📄 Text</span>
+        <span id="confirm-text-preview" class="confirm-value" style="font-size:10px;opacity:0.75;max-height:60px;overflow:hidden;"></span>
+      </div>
+      <div class="confirm-row" id="confirm-images-row" style="display:none">
+        <span class="confirm-label">🖼️ Images</span>
+        <span id="confirm-images-count" class="confirm-value"></span>
+      </div>
+
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button id="confirm-btn" class="analyze-btn" style="flex:1;font-size:12px;padding:10px 0;">✅ Confirm &amp; Analyze</button>
+        <button id="confirm-back-btn" style="flex:0 0 auto;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.12);color:#aaa;border-radius:8px;padding:10px 14px;cursor:pointer;font-size:12px;">✏️ Back</button>
+      </div>
+    </div>
+
     <!-- LOADING STATE -->
     <div id="loading-state" class="hidden">
       <div class="loader-wrapper">
