@@ -96,8 +96,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Step 1: Auto-scroll to trigger lazy-loaded content
       await autoScrollJobPage();
 
+      // Step 2: Find the active job detail panel — ONLY read from this container.
+      // On search results pages there are many job cards; we must scope to the active one.
+      const detailPanel =
+        document.querySelector('.jobs-search__job-details') ||    // search results right panel
+        document.querySelector('.jobs-details')             ||    // alternate search detail
+        document.querySelector('.job-view-layout')          ||    // direct job page
+        document.querySelector('main');                           // fallback
+
+      // Scoped getText — searches only inside detailPanel
+      const getScopedText = (root, ...selectors) => {
+        for (const sel of selectors) {
+          try {
+            const el = root.querySelector(sel);
+            if (el && el.innerText.trim()) return el.innerText.trim();
+          } catch(e) {}
+        }
+        return '';
+      };
+
       const metadata = {
-        company: getText(
+        company: getScopedText(detailPanel,
           '.job-details-jobs-unified-top-card__company-name a',
           '.job-details-jobs-unified-top-card__company-name',
           '.jobs-unified-top-card__company-name a',
@@ -105,97 +124,82 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           '.jobs-details-top-card__company-url',
           '[data-tracking-control-name="public_jobs_topcard-org-name"]'
         ),
-        title: getText(
+        title: getScopedText(detailPanel,
           '.job-details-jobs-unified-top-card__job-title h1',
           '.job-details-jobs-unified-top-card__job-title',
           '.jobs-unified-top-card__job-title h1',
           '.jobs-unified-top-card__job-title',
-          'h1.t-24'
+          'h1.t-24', 'h1'
         ),
-        poster_name: getText(
+        poster_name: getScopedText(detailPanel,
           '.hirer-card__hirer-information .app-aware-link',
           '.jobs-poster__name',
           '.jobs-poster__name-container',
           '.jobs-hiring-team-widget__hiring-manager-name'
         ),
-        poster_headline: getText(
+        poster_headline: getScopedText(detailPanel,
           '.hirer-card__hirer-information .jobs-poster__headline',
           '.jobs-poster__headline',
           '.jobs-hiring-team-widget__hiring-manager-title'
         ),
-        is_poster_verified: !!document.querySelector(
+        is_poster_verified: !!detailPanel.querySelector(
           '.jobs-poster__name-container .verified-badge, .jobs-hiring-team-widget__hiring-manager [aria-label*="Verified"]'
         ),
         poster_url: (
-          document.querySelector('.hirer-card__hirer-information a, .jobs-poster__name-link, .jobs-poster__name-container a')?.getAttribute('href') || ''
+          detailPanel.querySelector('.hirer-card__hirer-information a, .jobs-poster__name-link, .jobs-poster__name-container a')?.getAttribute('href') || ''
         ).split('?')[0],
-        // Also capture the company page URL to detect company-posted (not individual recruiter) jobs
         company_url: (
-          document.querySelector('.job-details-jobs-unified-top-card__company-name a, .jobs-unified-top-card__company-name a')?.getAttribute('href') || ''
+          detailPanel.querySelector('.job-details-jobs-unified-top-card__company-name a, .jobs-unified-top-card__company-name a')?.getAttribute('href') || ''
         ).split('?')[0],
-        location: getText(
+        location: getScopedText(detailPanel,
           '.job-details-jobs-unified-top-card__primary-description-without-tagline span',
           '.jobs-unified-top-card__bullet',
           '.jobs-details-top-card__bullet'
         ),
-        applicants: getText(
+        applicants: getScopedText(detailPanel,
           '.jobs-unified-top-card__applicant-count',
           '.job-details-jobs-unified-top-card__job-insight span'
         ),
-        is_promoted: !!document.querySelector(
+        is_promoted: !!detailPanel.querySelector(
           '.jobs-unified-top-card__promoted-status, .jobs-details-top-card__promoted-status'
         ),
-        company_size: getText(
-          '.jobs-company__inline-information',
-          '.jobs-details-top-card__company-info'
-        ),
-        company_industry: getText(
-          '.jobs-company__inline-information + .jobs-company__inline-information',
-          '.jobs-company__inline-information'
-        ),
-        company_followers: getText(
+        company_size:     getScopedText(detailPanel, '.jobs-company__inline-information', '.jobs-details-top-card__company-info'),
+        company_industry: getScopedText(detailPanel, '.jobs-company__inline-information + .jobs-company__inline-information'),
+        company_followers: getScopedText(detailPanel,
           '.job-details-jobs-unified-top-card__company-name + span',
           '.jobs-unified-top-card__company-name + span',
           '.jobs-company__inline-information--job-details span'
         ),
-        hiring_stats: getText(
+        hiring_stats: getScopedText(detailPanel,
           '.jobs-poster__hirer-context',
           '.hirer-card__hirer-information .jobs-poster__hirer-context',
           '.jobs-hiring-team-widget__hirer-context'
         )
       };
-      console.log('ScamShield Extracted Metadata:', metadata);
+      console.log('ScamShield Extracted Metadata (scoped to detail panel):', metadata);
 
-      // Step 3: Extract text from job description
-      const selectors = [
+      // Step 3: Extract text from the active job detail panel only
+      const descSelectors = [
         '#job-details',
         '.jobs-description__container',
         '.jobs-description',
-        '.job-view-layout',
-        '.feed-shared-update-v2__description-wrapper',
-        '.update-components-text',
-        '.feed-shared-text',
-        '.attributed-text-segment-list__content',
-        'article',
-        'main'
       ];
-      
       let bestMatch = '';
-      for (const sel of selectors) {
-        const elements = document.querySelectorAll(sel);
-        for (const el of elements) {
-          const txt = el.innerText.trim();
-          if (txt.length > bestMatch.length && txt.length > 50) bestMatch = txt;
+      for (const sel of descSelectors) {
+        const el = detailPanel.querySelector(sel);
+        if (el && el.innerText.trim().length > bestMatch.length) {
+          bestMatch = el.innerText.trim();
         }
         if (bestMatch.length > 250) break;
       }
-      extractedText = bestMatch || (document.querySelector('main')?.innerText ?? document.body.innerText);
+      // Fallback: full detail panel text (but NOT entire body to avoid bleeding)
+      extractedText = bestMatch || detailPanel.innerText || '';
 
       // Step 4: Capture images from the job post area
       const images = captureJobImages();
       const imageUrls = images.map(i => i.src);
       const imageDataUrls = images.filter(i => i.dataUrl).map(i => i.dataUrl);
-      
+
       console.log(`ScamShield: captured ${images.length} images from job post`);
 
       sendResponse({ text: extractedText, metadata: metadata, image_urls: imageUrls, image_data: imageDataUrls });
