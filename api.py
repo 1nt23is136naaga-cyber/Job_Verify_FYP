@@ -62,8 +62,8 @@ class AnalyzeRequest(BaseModel):
     text: str
     source: str = "other"
     metadata: dict = {}
-    image_data: list = []   # base64 data URLs from job post images
-    image_urls: list = []   # fallback: raw image URLs
+    image_data: list = []
+    image_urls: list = []
 
 class FeedbackRequest(BaseModel):
     job_id: int
@@ -73,8 +73,15 @@ class VerifyRequest(BaseModel):
     job_title: str
     company: str
 
-# In-memory store for deep verification tasks (job_title+company -> result)
-_verify_tasks: dict = {}   # key: "title|company" -> {"status": "pending"|"done", "result": dict}
+class FullScanRequest(BaseModel):
+    text: str
+    source: str = "other"
+    metadata: dict = {}
+    image_data: list = []
+
+# In-memory stores
+_verify_tasks: dict = {}     # key: "title|company" -> {status, result}
+_full_scan_tasks: dict = {}  # key: scan_id -> {status, phase, analyze_result, final_result}
 
 REPUTATION_FILE = "reputation_db.json"
 
@@ -1597,7 +1604,147 @@ def get_verify_status(task_key: str):
     return {"task_key": task_key, "status": "done", **task["result"]}
 
 
+# ── UNIFIED FULL SCAN (analyze + deep scraper → one final result) ─────────────
+
+import uuid
+
+def _run_full_scan(scan_id: str, req_dict: dict):
+    """
+    Background thread:
+    1. Runs the fast /analyze scoring engine
+    2. Runs scraper2.py deep verify (14 platforms + Google + Careers)
+    3. Merges scores → stores final combined result
+    """
+    try:
+        # Phase 1: Fast analyze
+        _full_scan_tasks[scan_id]["phase"] = "analyzing"
+
+        # Re-construct the AnalyzeRequest and call analyze_job directly
+        from fastapi.testclient import TestClient
+        import json as _json
+
+        # Call the analyze logic directly (avoid HTTP roundtrip)
+        ar = AnalyzeRequest(**req_dict)
+        analyze_result = analyze_job(ar)
+
+        job_title = analyze_result.get("job_title", "")
+        company   = analyze_result.get("company", "")
+        base_risk = analyze_result.get("risk_score", 50)
+
+        _full_scan_tasks[scan_id]["analyze_result"] = analyze_result
+        _full_scan_tasks[scan_id]["phase"] = "deep_scanning"
+
+        # Phase 2: Deep scraper (only if we have title + company)
+        score_adjustment = 0
+        adj_reason = ""
+        deep_data = {}
+
+        if job_title and company and job_title != "Unknown" and company != "Unknown":
+            task_key = f"{job_title.lower().strip()}|{company.lower().strip()}"
+            _verify_tasks[task_key] = {"status": "pending", "result": None}
+            _run_deep_verify(task_key, job_title, company)   # blocking call
+            dv = _verify_tasks.get(task_key, {}).get("result") or {}
+            score_adjustment = dv.get("score_adjustment", 0)
+            adj_reason       = dv.get("adj_reason", "")
+            deep_data        = dv
+        else:
+            deep_data = {"verdict": "Skipped — no title/company", "confirmed_on": [], "not_found_on": [], "portal_hits": 0}
+
+        # Phase 3: Merge
+        final_risk  = max(0, min(100, base_risk + score_adjustment))
+        final_trust = 100 - final_risk
+
+        # Rebuild verdict with final score
+        if final_risk <= 35:
+            verdict = "Likely Genuine"
+            color   = "green"
+        elif final_risk <= 60:
+            verdict = "Possibly Suspicious"
+            color   = "orange"
+        else:
+            verdict = "Likely Fraudulent"
+            color   = "red"
+
+        # Merge risk factors with scraper result
+        risk_factors = analyze_result.get("risk_factors", [])
+        if adj_reason:
+            risk_factors = risk_factors + [f"🌐 Platform Verification: {adj_reason}"]
+
+        final_result = {
+            **analyze_result,
+            "risk_score": final_risk,
+            "verdict": verdict,
+            "color": color,
+            "risk_factors": risk_factors,
+            "deep_verify": deep_data,
+            "score_adjustment": score_adjustment,
+        }
+
+        _full_scan_tasks[scan_id]["status"]       = "done"
+        _full_scan_tasks[scan_id]["phase"]        = "done"
+        _full_scan_tasks[scan_id]["final_result"] = final_result
+
+    except Exception as e:
+        import traceback
+        _full_scan_tasks[scan_id]["status"]       = "done"
+        _full_scan_tasks[scan_id]["phase"]        = "error"
+        _full_scan_tasks[scan_id]["final_result"] = {
+            "error": str(e),
+            "verdict": "Scan Error",
+            "color": "grey",
+            "risk_score": 50
+        }
+        print(f"[ScamShield] Full scan error: {traceback.format_exc()}")
+
+
+@app.post("/full_scan")
+def start_full_scan(req: FullScanRequest):
+    """
+    Starts a unified full scan: fast analyze + deep scraper.
+    Returns scan_id immediately — poll /full_scan_status/{scan_id} for result.
+    Typically completes in 30–120 seconds.
+    """
+    scan_id = str(uuid.uuid4())[:8]
+    req_dict = {
+        "text": req.text,
+        "source": req.source,
+        "metadata": req.metadata,
+        "image_data": req.image_data,
+        "image_urls": []
+    }
+    _full_scan_tasks[scan_id] = {
+        "status": "pending",
+        "phase": "starting",
+        "analyze_result": None,
+        "final_result": None
+    }
+    t = threading.Thread(target=_run_full_scan, args=(scan_id, req_dict), daemon=True)
+    t.start()
+    print(f"[ScamShield] Full scan started: {scan_id}")
+    return {"scan_id": scan_id, "status": "pending"}
+
+
+@app.get("/full_scan_status/{scan_id}")
+def get_full_scan_status(scan_id: str):
+    """Poll after /full_scan. Returns phase updates while running, final result when done."""
+    task = _full_scan_tasks.get(scan_id)
+    if not task:
+        return {"status": "not_found"}
+    if task["status"] == "pending":
+        return {
+            "scan_id": scan_id,
+            "status": "pending",
+            "phase": task.get("phase", "starting"),
+            # Return fast analyze result as soon as it's available for early display
+            "analyze_result": task.get("analyze_result")
+        }
+    return {
+        "scan_id": scan_id,
+        "status": "done",
+        **task["final_result"]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
-    # Make sure to run the server on port 8000
     uvicorn.run(app, host="0.0.0.0", port=8000)

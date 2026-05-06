@@ -80,70 +80,113 @@ document.getElementById('retry-btn').addEventListener('click', () => {
   showIdle();
 });
 
-// ── Core Analysis Call ────────────────────────────────────────────────────────
+// ── Full Scan (analyze + deep scraper → one final result) ────────────────────
+const PHASE_LABELS = {
+  starting:      '⚙️ Starting scan…',
+  analyzing:     '🔍 Analyzing job text, company & recruiter…',
+  deep_scanning: '🌐 Deep verifying across 14 platforms (Naukri, Indeed, LinkedIn…)',
+  done:          '✅ Done!'
+};
+
 async function runAnalysis(text, metadata, imageData = []) {
-  setStep(2);
+  showLoading();
+  setStep(1);
+
   try {
-    console.log('Sending Analysis Request:', { source: currentSource, metadata, images: imageData.length });
-    const res = await fetch(`${API_URL}/analyze`, {
+    // Step 1: Start full scan
+    const startRes = await fetch(`${API_URL}/full_scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, source: currentSource, metadata: metadata, image_data: imageData })
+      body: JSON.stringify({ text, source: currentSource, metadata, image_data: imageData })
     });
-    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+    if (!startRes.ok) throw new Error(`Server error: ${startRes.status}`);
+    const { scan_id } = await startRes.json();
+    setStep(2);
+
+    // Step 2: Poll for completion — update loading label each phase
+    const loadingMsg = document.getElementById('loading-msg');
+    let data = null;
+    let attempts = 0;
+
+    await new Promise((resolve, reject) => {
+      const poller = setInterval(async () => {
+        attempts++;
+        if (attempts > 60) {  // 5min max
+          clearInterval(poller);
+          reject(new Error('Scan timed out after 5 minutes.'));
+          return;
+        }
+        try {
+          const poll = await fetch(`${API_URL}/full_scan_status/${scan_id}`);
+          const result = await poll.json();
+
+          // Update loading label with current phase
+          if (loadingMsg && PHASE_LABELS[result.phase]) {
+            loadingMsg.textContent = PHASE_LABELS[result.phase];
+          }
+
+          if (result.status === 'done') {
+            clearInterval(poller);
+            data = result;
+            resolve();
+          }
+        } catch(e) { /* keep polling */ }
+      }, 4000);
+    });
+
     setStep(3);
-    const data = await res.json();
     currentJobId = data.job_id;
-    
-    // Save to history for background/content scripts
+
+    // Save to history
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab && tab.url) {
       chrome.storage.local.get(['scamshield_history'], (result) => {
         let history = result.scamshield_history || [];
-        const currentUrl = tab.url.split('?')[0];
-        
-        // Remove existing entry for this URL if present
-        history = history.filter(h => h.url !== currentUrl);
-        
-        // Add new entry
-        history.unshift({
-          url: currentUrl,
-          company: data.company,
-          title: data.job_title,
-          risk_score: data.risk_score,
-          color: data.color,
-          verdict: data.verdict,
-          timestamp: new Date().toISOString()
-        });
-        
-        // Keep only last 50
+        history = history.filter(h => h.url !== tab.url.split('?')[0]);
+        history.unshift({ url: tab.url.split('?')[0], company: data.company,
+          title: data.job_title, risk_score: data.risk_score, color: data.color,
+          verdict: data.verdict, timestamp: new Date().toISOString() });
         history = history.slice(0, 50);
-        
         chrome.storage.local.set({ scamshield_history: history }, () => {
-          // Trigger the background script to update the badge immediately
           chrome.action.setBadgeText({ text: (100 - data.risk_score).toString(), tabId: tab.id });
-          let badgeColor = '#4caf50'; // Green
+          let badgeColor = '#4caf50';
           if (data.color === 'orange') badgeColor = '#ff9800';
-          if (data.color === 'red') badgeColor = '#f44336';
+          if (data.color === 'red')    badgeColor = '#f44336';
           chrome.action.setBadgeBackgroundColor({ color: badgeColor, tabId: tab.id });
-          
-          // Trigger content script to update job card badges if on list view
           chrome.tabs.sendMessage(tab.id, { action: 'update_badges' });
         });
       });
     }
-    
+
+    // Hide deep verify banner — result is already merged into final score
+    const dvBanner = document.getElementById('deep-verify-banner');
+    if (dvBanner) dvBanner.style.display = 'none';
+
     renderResults(data);
 
-    // Auto-trigger deep verification (scraper2.py — 14 platforms + Google + Careers)
-    const dvBanner = document.getElementById('deep-verify-banner');
-    if (dvBanner) { dvBanner.style.display = 'none'; dvBanner.textContent = ''; }
-    startDeepVerify(data.job_title, data.company);
+    // Show deep verify summary in banner (informational only — score already merged)
+    const dv = data.deep_verify;
+    if (dv && dvBanner) {
+      const colorMap = { green: '#2e7d32', orange: '#e65100', red: '#b71c1c' };
+      dvBanner.style.display   = 'block';
+      dvBanner.style.background = colorMap[data.color] || '#1e3a5f';
+      dvBanner.style.color     = '#fff';
+      const hits      = dv.portal_hits ?? 0;
+      const confirmed = dv.confirmed_on?.join(', ') || 'None';
+      const notFound  = dv.not_found_on?.join(', ')  || 'None';
+      dvBanner.innerHTML =
+        `<strong>🔍 Deep Verify: ${dv.verdict || 'N/A'}</strong><br>` +
+        `✅ Found on (${hits}): ${confirmed}<br>` +
+        `❌ Not found: ${notFound}` +
+        (dv.careers_url ? `<br>🏢 <a href="${dv.careers_url}" target="_blank" style="color:#90caf9">${dv.careers_url}</a>` : '') +
+        (dv.time_taken  ? `<br><small style="opacity:0.7">⏱ ${Number(dv.time_taken).toFixed(1)}s</small>` : '');
+    }
 
   } catch (err) {
-    showError(`Failed to connect to the backend.\n\nMake sure the server is running:\n→ python -m uvicorn api:app --port 8000\n\n${err.message}`);
+    showError(`Failed to connect to the backend.\n\nMake sure the server is running:\n→ python api.py\n\n${err.message}`);
   }
 }
+
 
 // ── Render Results ────────────────────────────────────────────────────────────
 function renderResults(data) {
