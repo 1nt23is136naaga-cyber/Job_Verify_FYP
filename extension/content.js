@@ -268,19 +268,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Strategy 2: feed list — try every known post container selector
       if (!focusedPost) {
         const POST_SELECTORS = [
+          '[data-urn*="urn:li:activity"]',
+          '[data-urn*="urn:li:ugcPost"]',
+          '[data-urn*="urn:li:share"]',
           '[data-id*="urn:li:activity"]',
-          '[data-id*="urn:li:ugcPost"]',
-          '[data-id*="urn:li:share"]',
           '.feed-shared-update-v2',
+          'div.update-components-actor',
           'li.scaffold-finite-scroll__list-item',
-          'article[data-id]',
+          'article',
           '.occludable-update',
         ];
 
         let candidates = [];
         for (const sel of POST_SELECTORS) {
           const found = Array.from(document.querySelectorAll(sel));
-          if (found.length > 0) { candidates = found; break; }
+          if (found.length > 0) { 
+              // Exclude sidebar elements
+              candidates = found.filter(el => !el.closest('.scaffold-layout__aside') && !el.closest('.scaffold-layout__sidebar'));
+              if (candidates.length > 0) break; 
+          }
         }
 
         // Pick the post closest to the CENTER of the viewport
@@ -295,7 +301,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const dist = Math.abs(viewportCenter - postCenter);
             if (dist < closestDist) {
               closestDist = dist;
-              focusedPost = post;
+              // If we matched the actor, jump up to the parent post container
+              focusedPost = post.closest('[data-urn*="urn:li:activity"], .feed-shared-update-v2') || post;
             }
           }
         }
@@ -303,10 +310,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       // Strategy 3: any container that has the hiring post text visible
       if (!focusedPost) {
-        const mainArea = document.querySelector('.scaffold-layout__main, main, #main');
-        if (mainArea) {
-          // Use main area text — avoid document.body which starts with nav
-          extractedText = mainArea.innerText.slice(0, 4000);
+        const feedContainer = document.querySelector('.scaffold-finite-scroll, .core-rail') || document.querySelector('.scaffold-layout__main, main, #main');
+        if (feedContainer) {
+          // Try to avoid the profile snapshot sidebar by skipping the first few characters if it looks like a profile
+          extractedText = feedContainer.innerText.slice(0, 4000);
+          if (extractedText.includes('Connections\nGrow your network')) {
+             // It grabbed the left rail! Strip it out by finding where the feed actually starts
+             const parts = extractedText.split(/(?:Sort by:|Top|Recent|Show more)/);
+             if (parts.length > 1) extractedText = parts[1].trim();
+          }
         }
         sendResponse({ text: extractedText || '', metadata: { source_type: 'linkedin_post' } });
         return;
@@ -381,9 +393,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       console.log(`ScamShield post: author="${authorName}" bio="${authorBio}" text=${extractedText.length}chars images=${postImgEls.length}`);
 
+      // Basic heuristic to guess Title and Company from feed post text
+      let guessedTitle = '';
+      let guessedCompany = '';
+      const hiringMatch = extractedText.match(/(?:hiring|looking for|seeking)\s+(?:a|an|for)?\s*([A-Za-z\s\-/]{3,40}?)(?:\s+at\s+([A-Za-z0-9\s\-&]{2,30}))?[\.\n\r!]/i);
+      if (hiringMatch) {
+          guessedTitle = hiringMatch[1] ? hiringMatch[1].trim() : '';
+          guessedCompany = hiringMatch[2] ? hiringMatch[2].trim() : '';
+      }
+
       sendResponse({
         text:       extractedText,
-        metadata:   { poster_name: authorName, poster_headline: authorBio, source_type: 'linkedin_post', has_images: postImgEls.length > 0 },
+        metadata:   { 
+          poster_name: authorName, 
+          poster_headline: authorBio, 
+          source_type: 'linkedin_post', 
+          has_images: postImgEls.length > 0,
+          title: guessedTitle,
+          company: guessedCompany
+        },
         image_urls: postImageUrls,
         image_data: postImageDataUrls
       });
