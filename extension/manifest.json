@@ -1,18 +1,35 @@
 {
   "manifest_version": 3,
   "name": "ScamShield — AI Job Scam Detector",
-  "version": "2.1",
-  "description": "AI-powered job scam detector for LinkedIn, Gmail, Internshala & Naukri. Powered by Gemini 2.0 Flash.",
-  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "version": "3.0",
+  "description": "AI-powered job scam detector for LinkedIn, Gmail, Internshala & Naukri. Powered by Gemini 2.0 Flash and BERT neural models.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "tabs",
+    "storage"
+  ],
   "host_permissions": [
     "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*",
+    "https://*/*",
     "*://www.linkedin.com/*",
     "*://mail.google.com/*",
     "*://internshala.com/*",
     "*://www.naukri.com/*"
   ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"

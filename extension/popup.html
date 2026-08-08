@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Job Scam Detector</title>
+  <title>ScamShield — AI Job Scam Detector</title>
   <link rel="stylesheet" href="popup.css">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -14,10 +14,13 @@
       <div class="logo-icon">🛡️</div>
       <div class="logo-text">
         <span class="logo-title">ScamShield</span>
-        <span class="logo-sub">AI Job Scam Detector</span>
+        <span class="logo-sub">AI Job Scam Detector v3.0</span>
       </div>
     </div>
-    <div class="status-dot" id="status-dot" title="API Connected"></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button id="settings-btn" title="API Settings" style="background:none;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;">⚙️</button>
+      <div class="status-dot" id="status-dot" title="API Connected"></div>
+    </div>
   </div>
 
   <!-- TABS -->
@@ -28,6 +31,18 @@
 
   <!-- MAIN CONTENT -->
   <div class="main">
+
+    <!-- SETTINGS MODAL -->
+    <div id="settings-modal" class="hidden" style="background:#111;border:1px solid #333;border-radius:10px;padding:14px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:600;color:#fff;margin-bottom:6px;">⚙️ Backend API Configuration</div>
+      <div style="font-size:10px;color:#aaa;margin-bottom:8px;">Default: local server. Enter your deployed cloud URL if hosting remotely.</div>
+      <input id="api-url-input" class="confirm-input" type="text" placeholder="http://localhost:8000" style="margin-bottom:8px;">
+      <div style="display:flex;gap:6px;">
+        <button id="save-api-btn" style="background:#0a66c2;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">Save</button>
+        <button id="reset-api-btn" style="background:rgba(255,255,255,0.07);color:#aaa;border:1px solid #333;padding:6px 10px;border-radius:6px;font-size:11px;cursor:pointer;">Reset</button>
+        <button id="close-settings-btn" style="background:none;color:#888;border:none;margin-left:auto;font-size:11px;cursor:pointer;">Close</button>
+      </div>
+    </div>
 
     <!-- SCANNER WRAPPER -->
     <div id="scanner-wrapper">
@@ -133,6 +148,10 @@
         <div class="info-card">
           <div class="info-label">Job Title</div>
           <div class="info-value" id="res-title">—</div>
+        </div>
+        <div class="info-card" id="bert-card" style="display:none; grid-column: span 2; background: rgba(144, 202, 249, 0.1); border: 1px solid rgba(144, 202, 249, 0.3);">
+          <div class="info-label" style="color: #90caf9;">🧠 Deep Neural ML Model</div>
+          <div class="info-value" id="res-bert" style="color: #90caf9; font-weight: 600;">—</div>
         </div>
       </div>
 

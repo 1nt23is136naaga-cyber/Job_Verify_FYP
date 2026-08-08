@@ -1,624 +1,607 @@
-// content.js — ScamShield
+// content.js — ScamShield v3.0
 // Extracts job/email text from the active page and returns it to the popup.
+//
+// KEY FIX (2025-08-08): LinkedIn now uses 100% obfuscated CSS class names.
+// The ONLY reliable selectors are id-based: [id^="JobDetails_AboutTheJob_"]
+// Confirmed via live DOM inspection using Chrome DevTools MCP.
 
-// Helper to expand LinkedIn 'see more' buttons
+// ── Self-destruction guard ─────────────────────────────────────────────────────
+// If this script is already injected (e.g. after extension reload without tab refresh),
+// the OLD instance will detect context death and stop all activity via this flag.
+// The NEW instance sets the flag on load.
+if (window.__scamshield_v3_active) {
+  // Another instance is already running — this is a stale duplicate, do nothing.
+  // This happens if Chrome injects the script twice (rare but possible).
+} else {
+  window.__scamshield_v3_active = true;
+}
+
+// ── Context validity guard ─────────────────────────────────────────────────────
+// chrome.runtime.id becomes undefined when context is invalidated by extension reload.
+// We check this BEFORE every chrome.* API call to prevent the thrown error.
+function isContextValid() {
+  try {
+    // chrome.runtime.id is undefined when extension context is gone
+    return typeof chrome !== 'undefined' &&
+           chrome.runtime != null &&
+           typeof chrome.runtime.id === 'string' &&
+           chrome.runtime.id.length > 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ── Expand LinkedIn "see more" buttons ────────────────────────────────────────
 function expandSeeMore() {
-  document.querySelectorAll(
-    'button.inline-show-more-text__button, button.see-more, button.feed-shared-inline-show-more-text__see-more-less-toggle'
-  ).forEach(b => {
-    if (b.innerText.toLowerCase().includes('more') || b.innerText.toLowerCase().includes('see')) {
-      try { b.click(); } catch(e){}
+  try {
+    document.querySelectorAll(
+      'button.inline-show-more-text__button, ' +
+      'button[aria-label*="see more"], ' +
+      'button[aria-label*="Show more"]'
+    ).forEach(b => {
+      try { b.click(); } catch (e) {}
+    });
+  } catch (e) {}
+}
+
+// ── Auto-scroll to trigger lazy-loaded job details ────────────────────────────
+function autoScrollJobPage() {
+  return new Promise(resolve => {
+    try {
+      expandSeeMore();
+      // Use document.scrollingElement for reliable scrolling on LinkedIn SPA
+      const scroller = document.scrollingElement || document.documentElement || document.body;
+      const totalHeight = scroller.scrollHeight || 0;
+
+      if (totalHeight <= 200) { resolve(); return; }
+
+      const step = Math.max(200, Math.floor(totalHeight / 5));
+      let current = 0;
+      let done = false;
+
+      const timer = setInterval(() => {
+        current += step;
+        try { scroller.scrollTop = current; } catch (e) {}
+        if (current >= totalHeight || done) {
+          clearInterval(timer);
+          try { scroller.scrollTop = 0; } catch (e) {}
+          setTimeout(() => { expandSeeMore(); resolve(); }, 300);
+        }
+      }, 200);
+
+      // Hard cap: never spend more than 2s scrolling
+      setTimeout(() => {
+        done = true;
+        clearInterval(timer);
+        try { scroller.scrollTop = 0; } catch (e) {}
+        expandSeeMore();
+        resolve();
+      }, 2000);
+    } catch (e) {
+      resolve();
     }
   });
 }
 
-// Auto-scroll to trigger lazy-loaded job details
-function autoScrollJobPage() {
-  return new Promise(resolve => {
-    const jobContainer = document.querySelector(
-      '.jobs-description__container, .job-view-layout, main, #job-details'
-    ) || document.body;
-    
-    const totalHeight = jobContainer.scrollHeight;
-    const step = Math.floor(totalHeight / 4);
-    let current = 0;
-    
-    const scroller = setInterval(() => {
-      current += step;
-      jobContainer.scrollTo({ top: current, behavior: 'smooth' });
-      if (current >= totalHeight) {
-        clearInterval(scroller);
-        // Scroll back to top and wait for renders
-        setTimeout(() => {
-          jobContainer.scrollTo({ top: 0, behavior: 'instant' });
-          expandSeeMore(); // click any newly revealed 'see more' buttons
-          resolve();
-        }, 400);
-      }
-    }, 250);
-  });
+// ── Get the LinkedIn job description text ─────────────────────────────────────
+// LinkedIn 2025/2026 uses id="JobDetails_AboutTheJob_<jobId>" for the description.
+// All CSS class names are obfuscated hashes (e.g. _6ebd00b4 _8ba049e9) and change
+// with every deploy. Only id-based and aria-label selectors are stable.
+function extractLinkedInJobDescription() {
+  // PRIMARY: stable id-based selector (confirmed working via live DOM inspection)
+  const byId = document.querySelector('[id^="JobDetails_AboutTheJob"]');
+  if (byId && byId.innerText.trim().length > 50) {
+    return byId.innerText.trim();
+  }
+
+  // SECONDARY: try legacy CSS selectors (may work on older LinkedIn layouts)
+  const legacySelectors = [
+    '#job-details',
+    '.jobs-description-content__text',
+    '.jobs-description__container',
+    '.jobs-description',
+    '.jobs-box__html-content',
+    '.show-more-less-html__markup',
+  ];
+  for (const sel of legacySelectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el && el.innerText.trim().length > 50) return el.innerText.trim();
+    } catch (e) {}
+  }
+
+  // TERTIARY: look for any rich div with id containing "AboutTheJob" or "job-details"
+  const richById = document.querySelector(
+    '[id*="AboutTheJob"], [id*="job-details"], [id*="jobDescription"]'
+  );
+  if (richById && richById.innerText.trim().length > 50) {
+    return richById.innerText.trim();
+  }
+
+  return '';
 }
 
-// Capture relevant images from job description as base64 data URLs
-function captureJobImages() {
-  const imageArea = document.querySelector(
-    '#job-details, .jobs-description__container, .jobs-description, main'
+// ── Find all stable LinkedIn job detail IDs ────────────────────────────────────
+function getLinkedInMetadataFromDOM() {
+  // Extract the jobId from URL for id-based lookups
+  const jobIdMatch = window.location.href.match(/currentJobId=(\d+)|\/jobs\/view\/(\d+)/);
+  const jobId = jobIdMatch ? (jobIdMatch[1] || jobIdMatch[2]) : '';
+
+  // Company name — from page title (format: "Job Title | Company | LinkedIn")
+  let company = '';
+  const titleParts = document.title.split('|').map(p => p.trim());
+  if (titleParts.length >= 3) {
+    const candidate = titleParts[titleParts.length - 2];
+    if (candidate && candidate.toLowerCase() !== 'linkedin') company = candidate;
+  } else if (titleParts.length === 2 && titleParts[1].toLowerCase().includes('linkedin')) {
+    company = titleParts[0];
+  }
+
+  // Job title — from page title (first part before |)
+  let jobTitle = '';
+  if (titleParts.length >= 2 && !titleParts[0].toLowerCase().startsWith('jobs for')) {
+    jobTitle = titleParts[0];
+  }
+
+  // Recruiter/poster — look for the hiring team card by stable aria/role attributes
+  let posterName = '';
+  let posterHeadline = '';
+  let posterUrl = '';
+
+  // LinkedIn hiring team card uses aria-label and data attributes that are stable
+  const hiringCard = document.querySelector(
+    '[data-view-name="profile-entity-lockup"], ' +
+    '.hirer-card__hirer-information, ' +
+    '.jobs-poster, ' +
+    '.jobs-hiring-team-widget'
   );
+  if (hiringCard) {
+    // The poster name is in the first anchor or strong text within the card
+    const nameLink = hiringCard.querySelector('a[href*="/in/"], strong, b');
+    if (nameLink) posterName = nameLink.innerText.trim().split('\n')[0];
+    const headlineEl = hiringCard.querySelector('p, span:not(a span)');
+    if (headlineEl) posterHeadline = headlineEl.innerText.trim().split('\n')[0];
+    const linkEl = hiringCard.querySelector('a[href*="/in/"]');
+    if (linkEl) posterUrl = (linkEl.getAttribute('href') || '').split('?')[0];
+  }
+
+  // Location — stable label/aria patterns
+  const locationEl = document.querySelector('[aria-label*="location"], [aria-label*="Location"]');
+  const location = locationEl ? locationEl.innerText.trim() : '';
+
+  return { company, jobTitle, posterName, posterHeadline, posterUrl, location, jobId };
+}
+
+// ── Capture images from job description area ───────────────────────────────────
+function captureJobImages() {
+  const imageArea =
+    document.querySelector('[id^="JobDetails_AboutTheJob"]') ||
+    document.querySelector('#job-details, .jobs-description__container, .jobs-description');
   if (!imageArea) return [];
-  
-  const imgs = Array.from(imageArea.querySelectorAll('img'));
+
   const captured = [];
-  
-  for (const img of imgs) {
-    // Skip tiny icons, avatars, and SVGs
-    const w = img.naturalWidth || img.width;
-    const h = img.naturalHeight || img.height;
-    if (!img.src || img.src.startsWith('data:') || w < 80 || h < 80) continue;
-    if (img.src.includes('icon') || img.src.includes('avatar') || img.src.includes('logo') || img.src.includes('sprite')) continue;
-    
+  for (const img of Array.from(imageArea.querySelectorAll('img'))) {
+    const w = img.naturalWidth || img.width || 0;
+    const h = img.naturalHeight || img.height || 0;
+    const src = (img.src || '').toLowerCase();
+    if (!src || src.startsWith('data:') || w < 120 || h < 120) continue;
+    if (/icon|avatar|logo|sprite|ghost/.test(src)) continue;
     try {
       const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0);
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0);
       const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
-      if (dataUrl && dataUrl.length > 100) {
+      if (dataUrl && dataUrl.length > 200) {
         captured.push({ src: img.src, dataUrl });
-        if (captured.length >= 4) break; // max 4 images
+        if (captured.length >= 3) break;
       }
-    } catch(e) {
-      // Cross-origin images can't be canvas'd — send URL only
+    } catch (e) {
       captured.push({ src: img.src, dataUrl: null });
+      if (captured.length >= 3) break;
     }
   }
   return captured;
 }
 
+// ── Message handler ────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // CRITICAL: Check context validity FIRST. If this is the old stale script
+  // still running after an extension reload, bail out silently.
+  if (!isContextValid()) return false;
+
   if (request.action === 'extract_text') {
     (async () => {
-    let extractedText = '';
-    const host = window.location.hostname;
+      let extractedText = '';
+      const host = window.location.hostname;
 
-    // Shared helper — works in any scope
-    const getText = (...selectors) => {
-      for (const sel of selectors) {
-        try {
-          const el = document.querySelector(sel);
-          if (el && el.innerText.trim()) return el.innerText.trim();
-        } catch(e){}
-      }
-      return '';
-    };
-
-    if (host.includes('linkedin.com')) {
-      const lnPath = window.location.pathname;
-
-      if (lnPath.includes('/jobs/')) {
-        // ── LinkedIn Job Listing (/jobs/view/ or /jobs/search/) ─────────────
-        // Step 1: Auto-scroll to trigger lazy-loaded content
-        await autoScrollJobPage();
-
-        // ── Step 2: Identify the active job detail panel ───────────────────
-        const detailPanel =
-        document.querySelector('.jobs-search__job-details') ||
-        document.querySelector('.jobs-details')             ||
-        document.querySelector('.job-view-layout')          ||
-        document.querySelector('main');
-
-      // Scoped querySelector helper — only looks inside detailPanel
-      const $ = (sel) => { try { return detailPanel.querySelector(sel); } catch(e){ return null; } };
-      const $t = (...sels) => {
-        for (const s of sels) { const el = $(s); if (el?.innerText?.trim()) return el.innerText.trim(); }
+      // Shared text helper
+      const getText = (...selectors) => {
+        for (const sel of selectors) {
+          try {
+            const el = document.querySelector(sel);
+            if (el && el.innerText.trim()) return el.innerText.trim();
+          } catch (e) {}
+        }
         return '';
       };
 
-      // ── Step 3: Extract company name ──────────────────────────────────────
-      // MOST RELIABLE: page title format is "Job Title | Company | LinkedIn"
-      let company = '';
-      const titleParts = document.title.split('|').map(p => p.trim());
-      if (titleParts.length >= 3) {
-        // Last part is "LinkedIn", second-to-last is company
-        const candidate = titleParts[titleParts.length - 2];
-        if (candidate && candidate.toLowerCase() !== 'linkedin') company = candidate;
-      }
-      // CSS fallback if title parsing failed
-      if (!company) {
-        company = $t(
-          '.job-details-jobs-unified-top-card__company-name a',
-          '.job-details-jobs-unified-top-card__company-name',
-          '.jobs-unified-top-card__company-name a',
-          '.jobs-unified-top-card__company-name',
-          '.jobs-details-top-card__company-url'
-        );
-      }
+      // ── LinkedIn ──────────────────────────────────────────────────────────
+      if (host.includes('linkedin.com')) {
+        const lnPath = window.location.pathname;
 
-      // ── Step 4: Extract job title ─────────────────────────────────────────
-      // Title format sometimes: "Company Name · Job Title" — clean it
-      let jobTitle = $t(
-        '.job-details-jobs-unified-top-card__job-title h1',
-        '.job-details-jobs-unified-top-card__job-title',
-        '.jobs-unified-top-card__job-title h1',
-        '.jobs-unified-top-card__job-title',
-        'h1.t-24', 'h1'
-      );
-      // Remove leading "Company ·" or "Company -" prefix if present
-      if (company && jobTitle.toLowerCase().startsWith(company.toLowerCase())) {
-        jobTitle = jobTitle.slice(company.length).replace(/^[\s·\-–—]+/, '').trim();
-      }
+        // ── LinkedIn Job Listing ─────────────────────────────────────────────
+        if (lnPath.includes('/jobs/')) {
+          await autoScrollJobPage();
 
-      // ── Step 5: Extract recruiter — STRICTLY from hiring team card only ───
-      // The .jobs-poster section is specifically the hiring manager card.
-      // Do NOT use general name selectors that catch investor/about-company names.
-      const posterCard =
-        detailPanel.querySelector('.hirer-card__hirer-information') ||
-        detailPanel.querySelector('.jobs-poster')                   ||
-        detailPanel.querySelector('.jobs-hiring-team-widget');
+          // Extract using stable id-based selectors (2025/2026 LinkedIn)
+          const { company, jobTitle, posterName, posterHeadline, posterUrl, location, jobId } =
+            getLinkedInMetadataFromDOM();
 
-      const posterName = posterCard
-        ? (posterCard.querySelector('.app-aware-link, .jobs-poster__name, .jobs-hiring-team-widget__hiring-manager-name')?.innerText?.trim() || '')
-        : '';
+          const metadata = {
+            company,
+            title: jobTitle,
+            poster_name: posterName,
+            poster_headline: posterHeadline,
+            poster_url: posterUrl,
+            location,
+            job_id: jobId,
+            source_type: 'linkedin_job',
+            is_poster_verified: false,
+            company_url: '',
+          };
 
-      const posterHeadline = posterCard
-        ? (posterCard.querySelector('.jobs-poster__headline, .jobs-hiring-team-widget__hiring-manager-title')?.innerText?.trim() || '')
-        : '';
+          console.log('[ScamShield v3] metadata:', metadata);
 
-      const posterUrl = (posterCard?.querySelector('a')?.getAttribute('href') || '').split('?')[0];
+          // Get description text using stable selector
+          extractedText = extractLinkedInJobDescription();
 
-      // ── Step 6: Other metadata ────────────────────────────────────────────
-      const metadata = {
-        company,
-        title: jobTitle,
-        poster_name:      posterName,
-        poster_headline:  posterHeadline,
-        poster_url:       posterUrl,
-        is_poster_verified: !!detailPanel.querySelector(
-          '.jobs-poster__name-container .verified-badge, [aria-label*="Verified"]'
-        ),
-        company_url: ($('.job-details-jobs-unified-top-card__company-name a, .jobs-unified-top-card__company-name a')?.getAttribute('href') || '').split('?')[0],
-        location: $t(
-          '.job-details-jobs-unified-top-card__primary-description-without-tagline span',
-          '.jobs-unified-top-card__bullet',
-          '.jobs-details-top-card__bullet'
-        ),
-        applicants:  $t('.jobs-unified-top-card__applicant-count', '.job-details-jobs-unified-top-card__job-insight span'),
-        is_promoted: !!$('.jobs-unified-top-card__promoted-status'),
-        company_size:     $t('.jobs-company__inline-information', '.jobs-details-top-card__company-info'),
-        company_industry: $t('.jobs-company__inline-information + .jobs-company__inline-information'),
-        hiring_stats:     $t('.jobs-poster__hirer-context', '.jobs-hiring-team-widget__hirer-context')
-      };
-
-      console.log('ScamShield metadata:', metadata);
-
-      // ── Step 7: Extract job description text (scoped to detail panel) ─────
-      const descEl =
-        detailPanel.querySelector('#job-details') ||
-        detailPanel.querySelector('.jobs-description__container') ||
-        detailPanel.querySelector('.jobs-description');
-      extractedText = descEl ? descEl.innerText.trim() : (detailPanel.innerText || '');
-
-      // ── Step 8: Capture images ────────────────────────────────────────────
-      const images = captureJobImages();
-      const imageUrls = images.map(i => i.src);
-      const imageDataUrls = images.filter(i => i.dataUrl).map(i => i.dataUrl);
-
-      sendResponse({ text: extractedText, metadata, image_urls: imageUrls, image_data: imageDataUrls });
-      return;
-
-      } else if (lnPath.startsWith('/in/')) {
-        // ── LinkedIn User Profile Page ──────────────────────────────────────
-        // Scrapes the person's profile to evaluate them directly
-        
-        // Auto-scroll slightly to trigger lazy loading of About/Experience
-        await new Promise(r => {
-          window.scrollBy(0, 500);
-          setTimeout(() => { window.scrollTo(0, 0); r(); }, 300);
-        });
-
-        const $t = (sel) => {
-          const el = document.querySelector(sel);
-          return el ? el.innerText.trim() : '';
-        };
-
-        const name = $t('h1.text-heading-xlarge');
-        const headline = $t('.text-body-medium.break-words');
-        
-        // Find About section
-        let aboutText = '';
-        const aboutCard = Array.from(document.querySelectorAll('section')).find(s => s.querySelector('div[id="about"]'));
-        if (aboutCard) {
-          const aboutContent = aboutCard.querySelector('.display-flex.ph5.pv3');
-          if (aboutContent) aboutText = aboutContent.innerText.trim();
-        }
-
-        // Find Experience section
-        let expText = '';
-        const expCard = Array.from(document.querySelectorAll('section')).find(s => s.querySelector('div[id="experience"]'));
-        if (expCard) {
-          expText = expCard.innerText.trim();
-        }
-
-        const profileText = `[PROFILE EVALUATION]\nName: ${name}\nHeadline: ${headline}\n\nABOUT:\n${aboutText}\n\nEXPERIENCE:\n${expText}`;
-        
-        const meta = {
-          poster_name: name,
-          poster_headline: headline,
-          source_type: 'linkedin_profile'
-        };
-
-        console.log(`ScamShield: Scraped profile for ${name}`);
-        sendResponse({ text: profileText.slice(0, 4000), metadata: meta, image_urls: [], image_data: [] });
-        return;
-
-      } else {
-      // ── LinkedIn Feed Post / Share URL ────────────────────────────────────
-      // Handles: /feed/, /posts/..., /company/.../posts/
-
-      let focusedPost = null;
-
-      // Strategy 1: direct post detail page — single main article
-      if (lnPath.includes('/posts/') || lnPath.includes('/pulse/')) {
-        focusedPost =
-          document.querySelector('.scaffold-layout__main [data-id]')   ||
-          document.querySelector('.scaffold-layout__main article')      ||
-          document.querySelector('[data-id*="urn:li:activity"]');
-      }
-
-      // Strategy 2: feed list — try every known post container selector
-      if (!focusedPost) {
-        const POST_SELECTORS = [
-          '[data-urn*="urn:li:activity"]',
-          '[data-urn*="urn:li:ugcPost"]',
-          '[data-urn*="urn:li:share"]',
-          '[data-id*="urn:li:activity"]',
-          '.feed-shared-update-v2',
-          'div.update-components-actor',
-          'li.scaffold-finite-scroll__list-item',
-          'article',
-          '.occludable-update',
-        ];
-
-        let candidates = [];
-        for (const sel of POST_SELECTORS) {
-          const found = Array.from(document.querySelectorAll(sel));
-          if (found.length > 0) { 
-              // Exclude sidebar elements
-              candidates = found.filter(el => !el.closest('.scaffold-layout__aside') && !el.closest('.scaffold-layout__sidebar'));
-              if (candidates.length > 0) break; 
+          // If still empty, synthesize from title + company + full page text
+          if (extractedText.length < 80) {
+            const bodyText = (document.body ? document.body.innerText : '').trim();
+            extractedText = [
+              `Job Title: ${jobTitle || 'Unknown'}`,
+              `Company: ${company || 'Unknown'}`,
+              `Page: ${document.title}`,
+              '',
+              bodyText
+            ].join('\n');
           }
-        }
 
-        // Pick the post closest to the CENTER of the viewport
-        let closestDist = Infinity;
-        const viewportCenter = window.innerHeight / 2;
-        
-        for (const post of candidates) {
-          const rect = post.getBoundingClientRect();
-          // Check if post is visible at all
-          if (rect.bottom > 0 && rect.top < window.innerHeight) {
-            const postCenter = rect.top + (rect.height / 2);
-            const dist = Math.abs(viewportCenter - postCenter);
-            if (dist < closestDist) {
-              closestDist = dist;
-              // If we matched the actor, jump up to the parent post container
-              focusedPost = post.closest('[data-urn*="urn:li:activity"], .feed-shared-update-v2') || post;
+          console.log(`[ScamShield v3] extracted ${extractedText.length} chars`);
+
+          const images = captureJobImages();
+          sendResponse({
+            text: extractedText,
+            metadata,
+            image_urls: images.map(i => i.src),
+            image_data: images.filter(i => i.dataUrl).map(i => i.dataUrl)
+          });
+          return;
+
+        // ── LinkedIn Profile ───────────────────────────────────────────────
+        } else if (lnPath.startsWith('/in/')) {
+          await new Promise(r => {
+            window.scrollBy(0, 600);
+            setTimeout(() => { window.scrollTo(0, 0); r(); }, 400);
+          });
+
+          const name = getText('h1.text-heading-xlarge', 'h1');
+          const headline = getText('.text-body-medium.break-words');
+
+          let aboutText = '';
+          const aboutSection = Array.from(document.querySelectorAll('section'))
+            .find(s => s.querySelector('[id="about"]'));
+          if (aboutSection) aboutText = aboutSection.innerText.trim();
+
+          let expText = '';
+          const expSection = Array.from(document.querySelectorAll('section'))
+            .find(s => s.querySelector('[id="experience"]'));
+          if (expSection) expText = expSection.innerText.trim();
+
+          sendResponse({
+            text: `[PROFILE]\nName: ${name}\nHeadline: ${headline}\n\nABOUT:\n${aboutText}\n\nEXPERIENCE:\n${expText}`.slice(0, 4000),
+            metadata: { poster_name: name, poster_headline: headline, source_type: 'linkedin_profile' },
+            image_urls: [], image_data: []
+          });
+          return;
+
+        // ── LinkedIn Feed Post ─────────────────────────────────────────────
+        } else {
+          // Try to find the focused post using stable data-urn attributes
+          const POST_SELECTORS = [
+            '[data-urn*="urn:li:activity"]',
+            '[data-urn*="urn:li:ugcPost"]',
+            '[data-id*="urn:li:activity"]',
+            '.feed-shared-update-v2',
+            'article',
+          ];
+
+          let focusedPost = null;
+          for (const sel of POST_SELECTORS) {
+            const found = Array.from(document.querySelectorAll(sel))
+              .filter(el => !el.closest('[class*="aside"], [class*="sidebar"]'));
+            if (found.length > 0) {
+              // Pick the one closest to center of viewport
+              const viewCenter = window.innerHeight / 2;
+              let best = found[0], bestDist = Infinity;
+              for (const el of found) {
+                const r = el.getBoundingClientRect();
+                if (r.bottom > 0 && r.top < window.innerHeight) {
+                  const d = Math.abs(viewCenter - (r.top + r.height / 2));
+                  if (d < bestDist) { bestDist = d; best = el; }
+                }
+              }
+              focusedPost = best;
+              break;
             }
           }
-        }
-      }
 
-      // Strategy 3: any container that has the hiring post text visible
-      if (!focusedPost) {
-        const feedContainer = document.querySelector('.scaffold-finite-scroll, .core-rail') || document.querySelector('.scaffold-layout__main, main, #main');
-        if (feedContainer) {
-          // Try to avoid the profile snapshot sidebar by skipping the first few characters if it looks like a profile
-          extractedText = feedContainer.innerText.slice(0, 4000);
-          if (extractedText.includes('Connections\nGrow your network')) {
-             // It grabbed the left rail! Strip it out by finding where the feed actually starts
-             const parts = extractedText.split(/(?:Sort by:|Top|Recent|Show more)/);
-             if (parts.length > 1) extractedText = parts[1].trim();
+          if (!focusedPost) {
+            const fallback = document.querySelector('main, #main, body');
+            sendResponse({
+              text: (fallback ? fallback.innerText : document.body.innerText).slice(0, 4000),
+              metadata: { source_type: 'linkedin_post' },
+              image_urls: [], image_data: []
+            });
+            return;
           }
+
+          // Extract post text — stable attributes
+          const postTextEl =
+            focusedPost.querySelector('[class*="update-components-text"] [class*="break-words"]') ||
+            focusedPost.querySelector('[class*="feed-shared-text"] [class*="break-words"]') ||
+            focusedPost.querySelector('[class*="update-components-text"]') ||
+            focusedPost.querySelector('[class*="feed-shared-text"]');
+
+          extractedText = postTextEl
+            ? postTextEl.innerText.trim()
+            : focusedPost.innerText.slice(0, 3000).trim();
+
+          // Author from stable aria attributes
+          const nameEl =
+            focusedPost.querySelector('[class*="actor__name"] span[aria-hidden="true"]') ||
+            focusedPost.querySelector('[data-anonymize="person-name"]');
+          const authorName = nameEl ? nameEl.innerText.trim().split('\n')[0] : '';
+
+          const bioEl = focusedPost.querySelector('[class*="actor__description"] span[aria-hidden="true"]');
+          const authorBio = bioEl ? bioEl.innerText.trim().split('\n')[0] : '';
+
+          // Images
+          const postImgs = Array.from(focusedPost.querySelectorAll('img'))
+            .filter(img => {
+              const src = img.src || '';
+              const w = img.naturalWidth || img.width || 0;
+              const h = img.naturalHeight || img.height || 0;
+              return src && w > 80 && h > 80 && !/profile|ghost|avatar|icon|emoji/.test(src);
+            }).slice(0, 4);
+
+          const postImageUrls = postImgs.map(i => i.src);
+          const postImageData = [];
+          for (const img of postImgs) {
+            try {
+              const c = document.createElement('canvas');
+              c.width = img.naturalWidth || img.width;
+              c.height = img.naturalHeight || img.height;
+              c.getContext('2d').drawImage(img, 0, 0);
+              const d = c.toDataURL('image/jpeg', 0.8);
+              if (d && d.length > 200) postImageData.push(d);
+            } catch (e) {}
+          }
+
+          sendResponse({
+            text: extractedText,
+            metadata: {
+              poster_name: authorName, poster_headline: authorBio,
+              source_type: 'linkedin_post', has_images: postImgs.length > 0
+            },
+            image_urls: postImageUrls, image_data: postImageData
+          });
+          return;
         }
-        sendResponse({ text: extractedText || '', metadata: { source_type: 'linkedin_post' } });
+
+      // ── Gmail ─────────────────────────────────────────────────────────────
+      } else if (host.includes('mail.google.com')) {
+        const bodyEls = document.querySelectorAll('.a3s.aiL');
+        extractedText = bodyEls.length > 0
+          ? bodyEls[bodyEls.length - 1].innerText
+          : (document.querySelector('[data-message-id] .ii.gt')?.innerText || document.body.innerText);
+
+        sendResponse({
+          text: extractedText,
+          metadata: {
+            poster_name: getText('.gD', '.go') || '',
+            title: document.querySelector('h2.hP')?.innerText || '',
+            location: 'gmail'
+          }
+        });
+        return;
+
+      // ── Internshala ───────────────────────────────────────────────────────
+      } else if (host.includes('internshala.com')) {
+        const jobDesc = document.querySelector('.text-container, .job-description');
+        sendResponse({
+          text: jobDesc ? jobDesc.innerText : document.body.innerText,
+          metadata: {
+            company: getText('.company_name'),
+            title: getText('.profile_on_detail_page'),
+            location: getText('#location_names', '.location_link')
+          }
+        });
+        return;
+
+      // ── Naukri ────────────────────────────────────────────────────────────
+      } else if (host.includes('naukri.com')) {
+        const jobDesc = document.querySelector('.job-desc, #job-description');
+        sendResponse({
+          text: jobDesc ? jobDesc.innerText : document.body.innerText,
+          metadata: {
+            company: getText('.jd-header-comp-name', '.comp-dtls-wrap a'),
+            title: getText('.jd-header h1', '[class*="title"]'),
+            location: getText('.loc', '.location')
+          }
+        });
+        return;
+
+      // ── Generic fallback ──────────────────────────────────────────────────
+      } else {
+        const main = document.querySelector('main');
+        sendResponse({ text: (main || document.body).innerText });
         return;
       }
-
-      // ── Extract author info ─────────────────────────────────────────────
-      // Multiple selector attempts for LinkedIn's varying class names
-      const nameEl =
-        focusedPost.querySelector('.update-components-actor__name span[aria-hidden="true"]') ||
-        focusedPost.querySelector('.update-components-actor__name span:not(.visually-hidden)') ||
-        focusedPost.querySelector('.update-components-actor__name')     ||
-        focusedPost.querySelector('.feed-shared-actor__name')           ||
-        focusedPost.querySelector('[data-anonymize="person-name"]');
-
-      const authorName = nameEl?.innerText?.trim().replace(/\n.*/s, '') || '';  // first line only
-
-      const bioEl =
-        focusedPost.querySelector('.update-components-actor__description span[aria-hidden="true"]') ||
-        focusedPost.querySelector('.update-components-actor__description')  ||
-        focusedPost.querySelector('.update-components-actor__subtitle')     ||
-        focusedPost.querySelector('.feed-shared-actor__description');
-
-      const authorBio = bioEl?.innerText?.trim().replace(/\n.*/s, '') || '';
-
-      // ── Extract post text ONLY (exclude reactions/comments bar) ────────
-      const postTextEl =
-        focusedPost.querySelector('.update-components-text .break-words')  ||
-        focusedPost.querySelector('.update-components-text__text-view')    ||
-        focusedPost.querySelector('.feed-shared-text .break-words')        ||
-        focusedPost.querySelector('.feed-shared-text')                     ||
-        focusedPost.querySelector('.update-components-text')               ||
-        focusedPost.querySelector('.attributed-text-segment-list__content');
-
-      if (postTextEl) {
-        extractedText = postTextEl.innerText.trim();
-      } else {
-        // Controlled fallback: take innerText but cap it to avoid reaction bar garbage
-        const raw = focusedPost.innerText || '';
-        // LinkedIn posts rarely exceed 3000 chars; beyond that is reactions/comments
-        extractedText = raw.slice(0, 3000).trim();
-      }
-
-      // ── Capture images from the post (hiring flyers, salary tables, etc.) ──
-      const postImgEls = Array.from(
-        focusedPost.querySelectorAll(
-          '.update-components-image__image img, .feed-shared-image__container img, ' +
-          '.update-components-document__thumbnail img, img[data-delayed-url], img'
-        )
-      ).filter(img => {
-        const src = img.src || img.getAttribute('data-delayed-url') || '';
-        const w   = img.naturalWidth  || img.width  || 0;
-        const h   = img.naturalHeight || img.height || 0;
-        return src && !src.startsWith('data:') && w > 80 && h > 80 &&
-               !src.includes('profile') && !src.includes('ghost') &&
-               !src.includes('avatar') && !src.includes('icon') &&
-               !src.includes('emoji');
-      }).slice(0, 4);
-
-      const postImageUrls    = postImgEls.map(img => img.src || img.getAttribute('data-delayed-url') || '');
-      const postImageDataUrls = [];
-
-      for (const img of postImgEls) {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width  = img.naturalWidth  || img.width;
-          canvas.height = img.naturalHeight || img.height;
-          canvas.getContext('2d').drawImage(img, 0, 0);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          if (dataUrl && dataUrl.length > 200) postImageDataUrls.push(dataUrl);
-        } catch(e) { /* cross-origin — URL captured, backend will fetch */ }
-      }
-
-      console.log(`ScamShield post: author="${authorName}" bio="${authorBio}" text=${extractedText.length}chars images=${postImgEls.length}`);
-
-      // Basic heuristic to guess Title and Company from feed post text
-      let guessedTitle = '';
-      let guessedCompany = '';
-      const hiringMatch = extractedText.match(/(?:hiring|looking for|seeking)\s+(?:a|an|for)?\s*([A-Za-z\s\-/]{3,40}?)(?:\s+at\s+([A-Za-z0-9\s\-&]{2,30}))?[\.\n\r!]/i);
-      if (hiringMatch) {
-          guessedTitle = hiringMatch[1] ? hiringMatch[1].trim() : '';
-          guessedCompany = hiringMatch[2] ? hiringMatch[2].trim() : '';
-      }
-
-      sendResponse({
-        text:       extractedText,
-        metadata:   { 
-          poster_name: authorName, 
-          poster_headline: authorBio, 
-          source_type: 'linkedin_post', 
-          has_images: postImgEls.length > 0,
-          title: guessedTitle,
-          company: guessedCompany
-        },
-        image_urls: postImageUrls,
-        image_data: postImageDataUrls
-      });
-      return;
-      } // end else (post page)
-
-
-    } else if (host.includes('mail.google.com')) {
-      // Gmail — extract email body + sender metadata
-      const emailBodyElements = document.querySelectorAll('.a3s.aiL');
-      if (emailBodyElements.length > 0) {
-        extractedText = emailBodyElements[emailBodyElements.length - 1].innerText;
-      } else {
-        const msgBody = document.querySelector('[data-message-id] .ii.gt');
-        extractedText = msgBody ? msgBody.innerText : document.body.innerText;
-      }
-      
-      const gmailMeta = {
-        poster_name: getText('[email~="from"] span[email], .gD', '.go') || '',
-        title: document.querySelector('h2.hP')?.innerText || '',
-        location: 'gmail'
-      };
-      sendResponse({ text: extractedText, metadata: gmailMeta });
-      return;
-
-    } else if (host.includes('internshala.com')) {
-      const metadata = {
-        company: getText('.company_name'),
-        title: getText('.profile_on_detail_page'),
-        hiring_stats: getText('.hiring_since_container', '.hiring_stats_container', '.activity_stats'),
-        location: getText('#location_names', '.location_link')
-      };
-      const jobDesc = document.querySelector('.text-container') || document.querySelector('.job-description');
-      extractedText = jobDesc ? jobDesc.innerText : '';
-      sendResponse({ text: extractedText, metadata: metadata });
-      return;
-
-    } else if (host.includes('naukri.com')) {
-      const metadata = {
-        company: getText('.jd-header-comp-name', '.comp-dtls-wrap a'),
-        title: getText('.jd-header h1', '[class*="title"]'),
-        location: getText('.loc', '.location'),
-        company_size: getText('.comp-dtls-wrap .ni-job-tuple-icon-srp-loc'),
-        company_industry: getText('.ind-type')
-      };
-      const jobDesc = document.querySelector('.job-desc') || document.querySelector('#job-description');
-      extractedText = jobDesc ? jobDesc.innerText : document.body.innerText;
-      sendResponse({ text: extractedText, metadata: metadata });
-      return;
-
-    } else {
-      // Generic fallback
-      const main = document.querySelector('main');
-      extractedText = main ? main.innerText : document.body.innerText;
-    }
-
-    sendResponse({ text: extractedText });
     })();
+
+    return true; // Keep message channel open for async sendResponse
+
   } else if (request.action === 'update_badges') {
+    if (!isContextValid()) return false;
     updateJobCards();
     sendResponse({ success: true });
   }
+
   return true;
 });
 
-// ── Job Card Badges ──────────────────────────────────────────────────────────
+// ── Job Card Badges ────────────────────────────────────────────────────────────
+// Shows trust score badges on LinkedIn job list cards for previously scanned jobs.
 function updateJobCards() {
+  if (!isContextValid()) return;
   if (!window.location.hostname.includes('linkedin.com')) return;
-  
-  chrome.storage.local.get(['scamshield_history'], (result) => {
-    const history = result.scamshield_history || [];
-    if (history.length === 0) return;
-    
-    // Find all job cards in the list
-    const cards = document.querySelectorAll('.job-card-container');
-    cards.forEach(card => {
-      const link = card.querySelector('.job-card-container__link');
-      if (!link) return;
-      
-      const url = link.href.split('?')[0];
-      const match = history.find(h => url.includes(h.url));
-      
-      if (match) {
-        // Prevent adding multiple badges
-        if (card.querySelector('.scamshield-badge')) return;
-        
+
+  try {
+    chrome.storage.local.get(['scamshield_history'], result => {
+      if (!isContextValid() || (chrome.runtime.lastError)) return;
+      const history = result.scamshield_history || [];
+      if (!history.length) return;
+
+      // LinkedIn job cards — these class names ARE stable (BEM-style component names)
+      document.querySelectorAll('.job-card-container').forEach(card => {
+        if (card.querySelector('.scamshield-badge')) return; // already tagged
+
+        const link = card.querySelector('.job-card-container__link, a[href*="/jobs/view/"]');
+        if (!link) return;
+
+        const cardUrl = (link.href || '').split('?')[0];
+        const match = history.find(h => cardUrl && h.url && cardUrl.includes(h.url.split('?')[0]));
+        if (!match) return;
+
         const trustScore = 100 - match.risk_score;
-        let color = '#4caf50'; // Green
-        let icon = '✅';
-        if (match.color === 'orange') { color = '#ff9800'; icon = '⚠️'; }
-        if (match.color === 'red') { color = '#f44336'; icon = '🚨'; }
-        
+        const color = match.color === 'red' ? '#f44336' : match.color === 'orange' ? '#ff9800' : '#4caf50';
+        const icon  = match.color === 'red' ? '🚨' : match.color === 'orange' ? '⚠️' : '✅';
+
         const badge = document.createElement('div');
         badge.className = 'scamshield-badge';
-        badge.innerHTML = `<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:${color}; margin-right:4px;"></span> ${icon} ${trustScore} Trust`;
-        badge.style.cssText = `
-          display: inline-flex; align-items: center; font-size: 11px; font-weight: 600;
-          background: #222; color: #fff; padding: 2px 6px; border-radius: 12px;
-          margin-top: 4px; border: 1px solid #444; z-index: 10;
-        `;
-        
-        const metadataContainer = card.querySelector('.job-card-container__metadata-wrapper') || card;
-        metadataContainer.appendChild(badge);
-      }
+        badge.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px;vertical-align:middle;"></span>${icon} ${trustScore} Trust`;
+        badge.style.cssText = 'display:inline-flex;align-items:center;font-size:11px;font-weight:600;background:#1a1a1a;color:#fff;padding:2px 8px;border-radius:12px;margin-top:4px;border:1px solid #333;cursor:default;';
+
+        (card.querySelector('.job-card-container__metadata-wrapper') || card).appendChild(badge);
+      });
     });
-  });
+  } catch (e) {
+    // Context gone — stop silently
+  }
 }
 
-// Re-run badge update when user scrolls/loads more jobs
-const observer = new MutationObserver((mutations) => {
-  for (let m of mutations) {
-    if (m.addedNodes.length > 0) {
-      updateJobCards();
-      break;
+// ── MutationObserver for badge refresh ────────────────────────────────────────
+// Watches for new job cards loaded as user scrolls the job list.
+let _observerActive = false;
+try {
+  const _badgeObserver = new MutationObserver(mutations => {
+    // Self-terminate if context is gone
+    if (!isContextValid()) {
+      _badgeObserver.disconnect();
+      _observerActive = false;
+      return;
     }
-  }
-});
-observer.observe(document.body, { childList: true, subtree: true });
-
-// ── Pre-Apply Blocking Overlay ───────────────────────────────────────────────
-document.addEventListener('click', (e) => {
-  // Check if click was on or inside an Apply button
-  const applyBtn = e.target.closest('.jobs-apply-button, button[aria-label*="Apply"]');
-  if (!applyBtn) return;
-  
-  // We only intercept if it's not our own "Proceed Anyway" button
-  if (applyBtn.classList.contains('scamshield-allowed')) return;
-
-  const currentUrl = window.location.href.split('?')[0];
-  
-  chrome.storage.local.get(['scamshield_history'], (result) => {
-    const history = result.scamshield_history || [];
-    const match = history.find(h => currentUrl.includes(h.url));
-    
-    if (match) {
-      const trustScore = 100 - match.risk_score;
-      // Hard block if score < 50
-      if (trustScore < 50) {
-        e.preventDefault();
-        e.stopPropagation();
-        showBlockingOverlay(trustScore, match.verdict, applyBtn);
+    for (const m of mutations) {
+      if (m.addedNodes.length > 0) {
+        updateJobCards();
+        break;
       }
-    } else {
-      // Not scanned yet — Soft warning
-      e.preventDefault();
-      e.stopPropagation();
-      showBlockingOverlay('?', 'Not Scanned', applyBtn, true);
     }
   });
-}, true); // Use capture phase to intercept before React
+  _badgeObserver.observe(document.body, { childList: true, subtree: true });
+  _observerActive = true;
+} catch (e) {}
 
-function showBlockingOverlay(score, verdict, originalBtn, isUnscanned = false) {
-  // Remove existing if any
+// ── Pre-Apply Blocking Overlay ─────────────────────────────────────────────────
+// Intercepts clicks on Apply buttons and warns user if job is unscanned or risky.
+document.addEventListener('click', e => {
+  if (!isContextValid()) return;
+
+  const applyBtn = e.target.closest('.jobs-apply-button, button[aria-label*="Apply"]');
+  if (!applyBtn || applyBtn.classList.contains('scamshield-allowed')) return;
+
+  const currentUrl = window.location.href.split('?')[0];
+
+  try {
+    chrome.storage.local.get(['scamshield_history'], result => {
+      if (!isContextValid() || chrome.runtime.lastError) return;
+      const history = result.scamshield_history || [];
+      const match = history.find(h => h.url && currentUrl.includes(h.url.split('?')[0]));
+
+      if (match) {
+        const trustScore = 100 - match.risk_score;
+        if (trustScore < 50) {
+          e.preventDefault();
+          e.stopPropagation();
+          _showBlockingOverlay(trustScore, match.verdict, applyBtn, false);
+        }
+      } else {
+        // Not scanned yet — soft warning
+        e.preventDefault();
+        e.stopPropagation();
+        _showBlockingOverlay('?', 'Not Scanned', applyBtn, true);
+      }
+    });
+  } catch (e2) {
+    // Context gone — let click through
+  }
+}, true);
+
+function _showBlockingOverlay(score, verdict, originalBtn, isUnscanned = false) {
   const existing = document.getElementById('scamshield-blocker');
   if (existing) existing.remove();
-  
+
   const overlay = document.createElement('div');
   overlay.id = 'scamshield-blocker';
-  overlay.style.cssText = `
-    position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-    background: rgba(0,0,0,0.85); backdrop-filter: blur(8px);
-    z-index: 999999; display: flex; align-items: center; justify-content: center;
-    font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", "Fira Sans", Ubuntu, Oxygen, "Oxygen Sans", Cantarell, "Droid Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Lucida Grande", Helvetica, Arial, sans-serif;
-  `;
-  
-  const title = isUnscanned ? "Hold on a second! 🛡️" : "⚠️ High Scam Risk Detected";
-  const desc = isUnscanned 
+  overlay.style.cssText = [
+    'position:fixed;top:0;left:0;width:100vw;height:100vh',
+    'background:rgba(0,0,0,0.88);backdrop-filter:blur(8px)',
+    'z-index:999999;display:flex;align-items:center;justify-content:center',
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif'
+  ].join(';');
+
+  const title = isUnscanned ? 'Hold on a second! 🛡️' : '⚠️ High Scam Risk Detected';
+  const desc  = isUnscanned
     ? "You haven't scanned this job with ScamShield yet. We strongly recommend scanning before you apply."
-    : `This job has a Trust Score of <strong style="color:#f44336">${score}/100</strong> and is flagged as <strong>${verdict}</strong>. Applying may expose your personal information to fraudsters.`;
-    
-  const scanBtnHTML = isUnscanned 
-    ? `<button id="ss-scan" style="background:#0a66c2; color:white; border:none; padding:10px 20px; border-radius:100px; font-weight:600; cursor:pointer; font-size:15px; margin-right:12px;">Scan Job Now</button>`
-    : '';
-    
+    : `This job has a Trust Score of <strong style="color:#f44336">${score}/100</strong> and is flagged as <strong>${verdict}</strong>. Applying may expose your personal data to fraudsters.`;
+
   overlay.innerHTML = `
-    <div style="background: #111; border: 1px solid #333; padding: 32px; border-radius: 16px; max-width: 450px; text-align: center; color: #fff; box-shadow: 0 20px 40px rgba(0,0,0,0.4);">
-      <div style="font-size: 48px; margin-bottom: 16px;">${isUnscanned ? '🛡️' : '🚨'}</div>
-      <h2 style="margin: 0 0 12px 0; font-size: 22px;">${title}</h2>
-      <p style="margin: 0 0 24px 0; font-size: 15px; line-height: 1.5; color: #aaa;">${desc}</p>
-      <div style="display: flex; justify-content: center; gap: 12px;">
-        ${scanBtnHTML}
-        <button id="ss-proceed" style="background:transparent; color:#888; border:1px solid #444; padding:10px 20px; border-radius:100px; font-weight:600; cursor:pointer; font-size:15px;">
+    <div style="background:#111;border:1px solid #333;padding:32px;border-radius:16px;max-width:450px;width:90%;text-align:center;color:#fff;box-shadow:0 24px 48px rgba(0,0,0,0.5)">
+      <div style="font-size:52px;margin-bottom:16px">${isUnscanned ? '🛡️' : '🚨'}</div>
+      <h2 style="margin:0 0 12px;font-size:22px;font-weight:700">${title}</h2>
+      <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#aaa">${desc}</p>
+      <div style="display:flex;justify-content:center;gap:12px;flex-wrap:wrap">
+        ${isUnscanned ? '<button id="ss-scan" style="background:#0a66c2;color:#fff;border:none;padding:10px 20px;border-radius:100px;font-weight:600;cursor:pointer;font-size:14px">Scan Job Now</button>' : ''}
+        <button id="ss-proceed" style="background:transparent;color:#888;border:1px solid #444;padding:10px 20px;border-radius:100px;font-weight:600;cursor:pointer;font-size:14px">
           ${isUnscanned ? 'Apply Without Scanning' : 'Proceed Anyway (Risky)'}
         </button>
       </div>
-      <button id="ss-cancel" style="background:transparent; border:none; color:#aaa; margin-top: 20px; cursor:pointer; text-decoration:underline;">Cancel and Go Back</button>
-    </div>
-  `;
-  
+      <button id="ss-cancel" style="background:none;border:none;color:#666;margin-top:20px;cursor:pointer;text-decoration:underline;font-size:13px">Cancel and Go Back</button>
+    </div>`;
+
   document.body.appendChild(overlay);
-  
+
   if (isUnscanned) {
-    document.getElementById('ss-scan').addEventListener('click', () => {
+    document.getElementById('ss-scan').onclick = () => {
       overlay.remove();
-      // Attempt to open the popup or prompt user
-      alert("Click the ScamShield extension icon in your toolbar to scan!");
-    });
+      alert('Click the ScamShield 🛡️ icon in your browser toolbar to scan this job!');
+    };
   }
-  
-  document.getElementById('ss-proceed').addEventListener('click', () => {
+  document.getElementById('ss-proceed').onclick = () => {
     overlay.remove();
-    // Allow the original click to pass through
     originalBtn.classList.add('scamshield-allowed');
     originalBtn.click();
-  });
-  
-  document.getElementById('ss-cancel').addEventListener('click', () => {
-    overlay.remove();
-  });
+  };
+  document.getElementById('ss-cancel').onclick = () => overlay.remove();
 }

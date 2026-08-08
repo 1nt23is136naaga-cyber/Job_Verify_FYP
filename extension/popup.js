@@ -1,6 +1,6 @@
-// popup.js — ScamShield Extension
+// popup.js — ScamShield Extension v3.0
 
-const API_URL = 'http://localhost:8000';
+let API_URL = 'http://localhost:8000';
 let currentJobId = null;
 let currentSource = 'other';
 
@@ -11,37 +11,85 @@ const resultsState  = document.getElementById('results-state');
 const errorState    = document.getElementById('error-state');
 const siteBadge     = document.getElementById('site-badge');
 const statusDot     = document.getElementById('status-dot');
+const settingsModal = document.getElementById('settings-modal');
+const apiUrlInput   = document.getElementById('api-url-input');
 
-// ── On Load: detect site & ping API ──────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', async () => {
-  // Check API health
+// ── Helper: Ping API Health ───────────────────────────────────────────────────
+async function checkApiHealth() {
   try {
     const r = await fetch(`${API_URL}/docs`, { method: 'HEAD' });
-    if (!r.ok) throw new Error();
+    if (r.ok || r.status === 200 || r.status === 404) {
+      statusDot.className = 'status-dot';
+      statusDot.title = `Connected to ${API_URL}`;
+      return true;
+    }
+    throw new Error();
   } catch {
-    statusDot.classList.add('offline');
-    statusDot.title = 'API Offline — start server';
+    statusDot.className = 'status-dot offline';
+    statusDot.title = `API Offline — start server at ${API_URL}`;
+    return false;
   }
+}
+
+// ── On Load: read stored API URL, detect site & ping API ───────────────────────
+document.addEventListener('DOMContentLoaded', async () => {
+  // Read stored API URL if user customized it
+  chrome.storage.local.get(['api_url'], async (res) => {
+    if (res.api_url) {
+      API_URL = res.api_url;
+    }
+    apiUrlInput.value = API_URL;
+    await checkApiHealth();
+  });
 
   // Detect active tab
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const host = new URL(tab.url).hostname;
-  if (host.includes('linkedin.com')) {
-    siteBadge.textContent = '📋 LinkedIn — ready to analyze';
-    currentSource = 'linkedin';
-  } else if (host.includes('mail.google.com')) {
-    siteBadge.textContent = '📧 Gmail — ready to analyze';
-    currentSource = 'gmail';
-  } else if (host.includes('internshala.com')) {
-    siteBadge.textContent = '🎓 Internshala — ready to analyze';
-    currentSource = 'internshala';
-  } else if (host.includes('naukri.com')) {
-    siteBadge.textContent = '💼 Naukri — ready to analyze';
-    currentSource = 'naukri';
-  } else {
-    siteBadge.textContent = '🌐 ' + host + ' — use manual input below';
-    currentSource = 'other';
-  }
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url) {
+      const host = new URL(tab.url).hostname;
+      if (host.includes('linkedin.com')) {
+        siteBadge.textContent = '📋 LinkedIn — ready to analyze';
+        currentSource = 'linkedin';
+      } else if (host.includes('mail.google.com')) {
+        siteBadge.textContent = '📧 Gmail — ready to analyze';
+        currentSource = 'gmail';
+      } else if (host.includes('internshala.com')) {
+        siteBadge.textContent = '🎓 Internshala — ready to analyze';
+        currentSource = 'internshala';
+      } else if (host.includes('naukri.com')) {
+        siteBadge.textContent = '💼 Naukri — ready to analyze';
+        currentSource = 'naukri';
+      } else {
+        siteBadge.textContent = '🌐 ' + host + ' — use manual input below';
+        currentSource = 'other';
+      }
+    }
+  } catch(e) {}
+});
+
+// ── Settings Modal Handlers ───────────────────────────────────────────────────
+document.getElementById('settings-btn').addEventListener('click', () => {
+  settingsModal.classList.toggle('hidden');
+});
+document.getElementById('close-settings-btn').addEventListener('click', () => {
+  settingsModal.classList.add('hidden');
+});
+document.getElementById('save-api-btn').addEventListener('click', async () => {
+  const newUrl = (apiUrlInput.value.trim() || 'http://localhost:8000').replace(/\/+$/, '');
+  API_URL = newUrl;
+  chrome.storage.local.set({ api_url: newUrl }, async () => {
+    const ok = await checkApiHealth();
+    alert(ok ? `✅ Connected to ${newUrl}` : `⚠️ Saved, but could not reach ${newUrl}. Make sure the server is running.`);
+    settingsModal.classList.add('hidden');
+  });
+});
+document.getElementById('reset-api-btn').addEventListener('click', () => {
+  API_URL = 'http://localhost:8000';
+  apiUrlInput.value = API_URL;
+  chrome.storage.local.remove(['api_url'], async () => {
+    await checkApiHealth();
+    settingsModal.classList.add('hidden');
+  });
 });
 
 // Pending extraction data (held between scrape and confirm)
@@ -51,7 +99,6 @@ let _pending = null;
 document.getElementById('analyze-btn').addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  // Show a brief "extracting…" loading pulse on the idle state button
   const btn = document.getElementById('analyze-btn');
   btn.disabled = true;
   btn.querySelector('span:last-child').textContent = 'Extracting…';
@@ -61,11 +108,10 @@ document.getElementById('analyze-btn').addEventListener('click', async () => {
     btn.querySelector('span:last-child').textContent = 'Analyze Now';
 
     if (chrome.runtime.lastError || !response || !response.text || response.text.trim().length < 20) {
-      showError('Could not extract text from this page.\n\nTry using the manual paste box below.');
+      showError('Could not extract text from this page.\n\nMake sure you are on an open job post or paste into the box below.');
       return;
     }
 
-    // Store pending extraction
     _pending = {
       text:      response.text,
       metadata:  response.metadata || {},
@@ -81,12 +127,10 @@ document.getElementById('analyze-btn').addEventListener('click', async () => {
 function showConfirm(pending) {
   const meta = pending.metadata || {};
 
-  // Populate editable fields
   document.getElementById('confirm-company').value   = meta.company        || meta.title?.split('|')[1]?.trim() || '';
   document.getElementById('confirm-recruiter').value = meta.poster_name    || '';
   document.getElementById('confirm-title').value     = meta.title          || '';
 
-  // Poster bio/headline
   const bioRow = document.getElementById('confirm-bio-row');
   const bioEl  = document.getElementById('confirm-bio');
   if (meta.poster_headline) {
@@ -96,11 +140,9 @@ function showConfirm(pending) {
     bioRow.style.display = 'none';
   }
 
-  // Text preview (first 250 chars)
   document.getElementById('confirm-text-preview').textContent =
     pending.text.trim().slice(0, 250) + (pending.text.length > 250 ? '…' : '');
 
-  // Images count
   const imgRow = document.getElementById('confirm-images-row');
   if (pending.imageData.length > 0 || pending.imageUrls.length > 0) {
     const total = Math.max(pending.imageData.length, pending.imageUrls.length);
@@ -111,7 +153,6 @@ function showConfirm(pending) {
     imgRow.style.display = 'none';
   }
 
-  // Show confirm panel
   idleState.classList.add('hidden');
   loadingState.classList.add('hidden');
   resultsState.classList.add('hidden');
@@ -123,7 +164,6 @@ function showConfirm(pending) {
 document.getElementById('confirm-btn').addEventListener('click', async () => {
   if (!_pending) return;
 
-  // Read back any edits the user made to the fields
   _pending.metadata.company     = document.getElementById('confirm-company').value.trim()   || _pending.metadata.company;
   _pending.metadata.poster_name = document.getElementById('confirm-recruiter').value.trim() || _pending.metadata.poster_name;
   _pending.metadata.title       = document.getElementById('confirm-title').value.trim()     || _pending.metadata.title;
@@ -160,7 +200,6 @@ document.getElementById('retry-btn').addEventListener('click', () => {
   showIdle();
 });
 
-
 // ── Full Scan (analyze + deep scraper → one final result) ────────────────────
 const PHASE_LABELS = {
   starting:      '⚙️ Starting scan…',
@@ -174,7 +213,6 @@ async function runAnalysis(text, metadata, imageData = []) {
   setStep(1);
 
   try {
-    // Step 1: Start full scan
     const startRes = await fetch(`${API_URL}/full_scan`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -184,7 +222,6 @@ async function runAnalysis(text, metadata, imageData = []) {
     const { scan_id } = await startRes.json();
     setStep(2);
 
-    // Step 2: Poll for completion — update loading label each phase
     const loadingMsg = document.getElementById('loading-msg');
     let data = null;
     let attempts = 0;
@@ -192,7 +229,7 @@ async function runAnalysis(text, metadata, imageData = []) {
     await new Promise((resolve, reject) => {
       const poller = setInterval(async () => {
         attempts++;
-        if (attempts > 60) {  // 5min max
+        if (attempts > 60) {
           clearInterval(poller);
           reject(new Error('Scan timed out after 5 minutes.'));
           return;
@@ -201,7 +238,6 @@ async function runAnalysis(text, metadata, imageData = []) {
           const poll = await fetch(`${API_URL}/full_scan_status/${scan_id}`);
           const result = await poll.json();
 
-          // Update loading label with current phase
           if (loadingMsg && PHASE_LABELS[result.phase]) {
             loadingMsg.textContent = PHASE_LABELS[result.phase];
           }
@@ -211,12 +247,16 @@ async function runAnalysis(text, metadata, imageData = []) {
             data = result;
             resolve();
           }
-        } catch(e) { /* keep polling */ }
-      }, 4000);
+        } catch(e) {}
+      }, 3500);
     });
 
     setStep(3);
     currentJobId = data.job_id;
+
+    const resolvedCompany = (data.company && data.company !== 'Unknown') ? data.company : (_pending?.metadata?.company || 'Unknown Company');
+    const resolvedTitle   = (data.job_title && data.job_title !== 'Not detected' && data.job_title !== 'Unknown') ? data.job_title : (_pending?.metadata?.title || 'Unknown Role');
+    const resolvedRecruiter = (data.recruiter && data.recruiter !== 'Unknown') ? data.recruiter : (_pending?.metadata?.poster_name || 'Not listed');
 
     // Save to history
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -224,9 +264,15 @@ async function runAnalysis(text, metadata, imageData = []) {
       chrome.storage.local.get(['scamshield_history'], (result) => {
         let history = result.scamshield_history || [];
         history = history.filter(h => h.url !== tab.url.split('?')[0]);
-        history.unshift({ url: tab.url.split('?')[0], company: data.company,
-          title: data.job_title, risk_score: data.risk_score, color: data.color,
-          verdict: data.verdict, timestamp: new Date().toISOString() });
+        history.unshift({
+          url: tab.url.split('?')[0],
+          company: resolvedCompany,
+          title: resolvedTitle,
+          risk_score: data.risk_score,
+          color: data.color,
+          verdict: data.verdict,
+          timestamp: new Date().toISOString()
+        });
         history = history.slice(0, 50);
         chrome.storage.local.set({ scamshield_history: history }, () => {
           chrome.action.setBadgeText({ text: (100 - data.risk_score).toString(), tabId: tab.id });
@@ -239,13 +285,11 @@ async function runAnalysis(text, metadata, imageData = []) {
       });
     }
 
-    // Hide deep verify banner — result is already merged into final score
     const dvBanner = document.getElementById('deep-verify-banner');
     if (dvBanner) dvBanner.style.display = 'none';
 
     renderResults(data);
 
-    // Show deep verify summary in banner (informational only — score already merged)
     const dv = data.deep_verify;
     if (dv && dvBanner) {
       const colorMap = { green: '#2e7d32', orange: '#e65100', red: '#b71c1c' };
@@ -264,26 +308,20 @@ async function runAnalysis(text, metadata, imageData = []) {
     }
 
   } catch (err) {
-    showError(`Failed to connect to the backend.\n\nMake sure the server is running:\n→ python api.py\n\n${err.message}`);
+    showError(`Failed to connect to the backend (${API_URL}).\n\nMake sure the server is running:\n→ python api.py\n\n${err.message}`);
   }
 }
 
-
 // ── Render Results ────────────────────────────────────────────────────────────
 function renderResults(data) {
-  // Convert backend risk_score to a display Trust Score
-  // risk_score: 0 = safe, 100 = scam
-  // trust_score: 100 = safe, 0 = scam  (inverted for intuitive UI)
   const riskScore = data.risk_score ?? 0;
   const trustScore = 100 - riskScore;
 
-  // Score ring animation — fill based on trust score (high fill = safe)
   const circumference = 314;
   const offset = circumference - (trustScore / 100) * circumference;
   const ring = document.getElementById('ring-fill');
   ring.style.strokeDashoffset = offset;
 
-  // Score number count-up to trust score
   const numEl = document.getElementById('score-number');
   let count = 0;
   const target = trustScore;
@@ -293,12 +331,10 @@ function renderResults(data) {
     if (count >= target) clearInterval(interval);
   }, 20);
 
-  // Verdict
   const verdictEl = document.getElementById('verdict-text');
   const subEl = document.getElementById('verdict-sub');
   verdictEl.textContent = data.verdict || '—';
 
-  // Color class on score section
   const scoreSection = document.querySelector('.score-section');
   scoreSection.classList.remove('verdict-green','verdict-orange','verdict-red');
   if (data.color === 'green') {
@@ -312,15 +348,26 @@ function renderResults(data) {
     subEl.textContent = 'Multiple risk signals detected — proceed with caution';
   }
 
-  // Info grid
-  document.getElementById('res-company').textContent   = data.company   || 'Unknown';
-  document.getElementById('res-recruiter').textContent = data.recruiter  || 'Unknown';
+  const resCompany = (data.company && data.company !== 'Unknown') ? data.company : (_pending?.metadata?.company || 'Unknown');
+  const resTitle   = (data.job_title && data.job_title !== 'Not detected' && data.job_title !== 'Unknown') ? data.job_title : (_pending?.metadata?.title || 'Not detected');
+  const resRec     = (data.recruiter && data.recruiter !== 'Unknown') ? data.recruiter : (_pending?.metadata?.poster_name || 'Not listed');
+
+  document.getElementById('res-company').textContent   = resCompany;
+  document.getElementById('res-recruiter').textContent = resRec;
   document.getElementById('res-email').textContent     = data.email      || 'Not found';
+  document.getElementById('res-title').textContent     = resTitle;
   
-  // Always show job title
-  document.getElementById('res-title').textContent = data.job_title || 'Not detected';
+  const bertCard = document.getElementById('bert-card');
+  if (data.bert_probability !== undefined && data.bert_probability !== null) {
+    bertCard.style.display = 'block';
+    const bertPct = Math.round(data.bert_probability * 100);
+    const bertText = bertPct > 60 ? `🚨 ${bertPct}% Scam Probability` : `✅ ${bertPct}% Scam Probability`;
+    document.getElementById('res-bert').textContent = bertText;
+    document.getElementById('res-bert').style.color = bertPct > 60 ? '#fca5a5' : '#86efac';
+  } else {
+    bertCard.style.display = 'none';
+  }
   
-  // Dynamic Registry Badge — shown below the Company name (not title)
   const companyCell = document.getElementById('res-company').parentElement;
   const existingBadge = companyCell.querySelector('.registry-badge');
   if (existingBadge) existingBadge.remove();
@@ -339,7 +386,6 @@ function renderResults(data) {
     companyCell.appendChild(badge);
   }
 
-  // Risk pills
   const pillsContainer = document.getElementById('risk-pills');
   pillsContainer.innerHTML = '';
   const GOOD_SIGNALS = ['[+', '✅', 'verified', 'genuine', 'positive', 'high social proof', 'trusted brand'];
@@ -349,7 +395,6 @@ function renderResults(data) {
       const rfLower = rf.toLowerCase();
       const isGood = GOOD_SIGNALS.some(sig => rf.includes(sig) || rfLower.includes(sig));
       pill.className = `risk-pill ${isGood ? 'good' : 'bad'}`;
-      // Shorten for display
       pill.textContent = rf.length > 60 ? rf.substring(0, 58) + '…' : rf;
       pill.title = rf;
       pillsContainer.appendChild(pill);
@@ -361,7 +406,6 @@ function renderResults(data) {
     pillsContainer.appendChild(pill);
   }
 
-  // OSINT Alerts — shown as inline banners if triggered
   const existingAlerts = document.getElementById('osint-alerts');
   if (existingAlerts) existingAlerts.remove();
   
@@ -403,7 +447,6 @@ async function submitFeedback(isScam) {
   const scamBtn = document.getElementById('fb-scam');
   const thanks = document.getElementById('feedback-thanks');
   
-  // Visual state
   safeBtn.classList.add('selected');
   scamBtn.classList.add('selected');
   thanks.textContent = 'Updating...';
@@ -417,12 +460,10 @@ async function submitFeedback(isScam) {
     });
     if (res.ok) {
       thanks.textContent = 'Feedback received! 🛡️';
-      console.log('Feedback saved successfully');
     } else {
       throw new Error(`Server returned ${res.status}`);
     }
   } catch (err) {
-    console.error('Feedback error:', err);
     thanks.textContent = 'Failed to save feedback.';
     safeBtn.classList.remove('selected');
     scamBtn.classList.remove('selected');
@@ -443,96 +484,11 @@ function showIdle() {
   _pending = null;
 }
 
-// ── Deep Verify via scraper2.py ───────────────────────────────────────────────
-async function startDeepVerify(jobTitle, company) {
-  if (!jobTitle || !company) return;
-  const banner = document.getElementById('deep-verify-banner');
-  if (!banner) return;
-  banner.innerHTML = '🔍 Deep verifying across 14 platforms… <span style="opacity:0.6">(30–90 sec)</span>';
-  banner.style.display = 'block';
-  banner.style.background = '#1e3a5f';
-  banner.style.color = '#90caf9';
-
-  try {
-    const res = await fetch(`${API_URL}/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_title: jobTitle, company: company })
-    });
-    const data = await res.json();
-    const taskKey = data.task_key;
-    if (!taskKey) return;
-
-    // Poll every 5 seconds for up to 3 minutes
-    let attempts = 0;
-    const poller = setInterval(async () => {
-      attempts++;
-      if (attempts > 36) { clearInterval(poller); banner.textContent = '⏱ Deep verify timed out.'; return; }
-      try {
-        const poll = await fetch(`${API_URL}/verify_status/${encodeURIComponent(taskKey)}`);
-        const result = await poll.json();
-        if (result.status === 'done') {
-          clearInterval(poller);
-          const colorMap = { green: '#2e7d32', orange: '#e65100', red: '#b71c1c', grey: '#555' };
-          banner.style.background = colorMap[result.color] || '#333';
-          banner.style.color = '#fff';
-          const confirmed = result.confirmed_on?.join(', ') || 'None';
-          const notFound  = result.not_found_on?.join(', ') || 'None';
-          const hits      = result.portal_hits ?? 0;
-          banner.innerHTML =
-            `<strong>🔍 Deep Verify: ${result.verdict}</strong><br>` +
-            `✅ Found on (${hits}): ${confirmed}<br>` +
-            `❌ Not found: ${notFound}` +
-            (result.careers_url ? `<br>🏢 Careers: <a href="${result.careers_url}" target="_blank" style="color:#90caf9">${result.careers_url}</a>` : '') +
-            (result.time_taken ? `<br><small style="opacity:0.7">⏱ ${result.time_taken.toFixed(1)}s</small>` : '');
-
-          // ── Apply score adjustment to the Trust Ring ─────────────────
-          const adj = result.score_adjustment ?? 0;
-          if (adj !== 0) {
-            const ring       = document.getElementById('ring-fill');
-            const numEl      = document.getElementById('score-number');
-            const currentRisk = 100 - parseInt(numEl.textContent || '50');
-            const newRisk     = Math.max(0, Math.min(100, currentRisk + adj));
-            const newTrust    = 100 - newRisk;
-            const circumference = 314;
-            ring.style.strokeDashoffset = circumference - (newTrust / 100) * circumference;
-
-            // Animated count-up/down to new score
-            let count = parseInt(numEl.textContent);
-            const step = newTrust > count ? 1 : -1;
-            const anim = setInterval(() => {
-              count += step;
-              numEl.textContent = count;
-              if (count === newTrust) clearInterval(anim);
-            }, 25);
-          }
-
-          // ── Add a platform verification pill ─────────────────────────
-          const pillsContainer = document.getElementById('risk-pills');
-          if (pillsContainer) {
-            const platPill = document.createElement('span');
-            platPill.className = 'pill ' + (adj <= 0 ? 'pill-good' : 'pill-bad');
-            const adjLabel = adj <= 0 ? `[+${Math.abs(adj)} pts trust]` : `[+${adj} pts risk]`;
-            platPill.textContent = adj <= 0
-              ? `🌐 Found on ${hits} job platform(s) ${adjLabel}`
-              : `🌐 Not verified on major platforms ${adjLabel}`;
-            pillsContainer.appendChild(platPill);
-          }
-        }
-      } catch(e) { /* keep polling */ }
-    }, 5000);
-
-  } catch(e) {
-    banner.textContent = '⚠️ Deep verify unavailable.';
-  }
-}
-
 function showLoading() {
   idleState.classList.add('hidden');
   loadingState.classList.remove('hidden');
   resultsState.classList.add('hidden');
   errorState.classList.add('hidden');
-  // Reset steps
   document.getElementById('step-1').className = 'step';
   document.getElementById('step-2').className = 'step';
   document.getElementById('step-3').className = 'step';
@@ -625,8 +581,6 @@ document.getElementById('clear-history-btn').addEventListener('click', () => {
   if(confirm("Clear all scan history?")) {
     chrome.storage.local.set({ scamshield_history: [] }, () => {
       loadHistory();
-      
-      // Clear badges from active tab
       chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
         if(tabs[0]) {
           chrome.action.setBadgeText({ text: '?', tabId: tabs[0].id });
