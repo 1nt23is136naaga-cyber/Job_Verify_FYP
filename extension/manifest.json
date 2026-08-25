@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ScamShield AI Job Scam Detector",
-  "version": "3.2",
-  "description": "AI powered job scam detector for LinkedIn, Indeed, and Naukri. Identifies risk patterns in postings using Gemini AI.",
+  "version": "5.0",
+  "description": "AI-powered job scam detector. Instantly analyzes job postings and scores their risk level using Gemini AI and machine learning.",
   "permissions": [
     "activeTab",
     "storage",
@@ -16,7 +16,6 @@
     "http://localhost:8000/*",
     "http://127.0.0.1:8000/*",
     "https://*.onrender.com/*",
-    "https://*.railway.app/*",
     "https://generativelanguage.googleapis.com/*"
   ],
   "icons": {

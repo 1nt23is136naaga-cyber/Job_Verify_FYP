@@ -1,4 +1,4 @@
-// popup.js — ScamShield Extension v3.2
+// popup.js — ScamShield Extension v5.0
 // CWS Fixes:
 //   [Red Potassium]  — Client-side Gemini fallback (works without any backend server)
 //   [Grey Potassium] — Verdicts describe the JOB POSTING only, never an individual
@@ -6,13 +6,10 @@
 
 let API_URL = 'https://job-verify-fyp.onrender.com';
 
-// ── Bundled demo key pool — rotated automatically on rate limit ───────────────
-// 4 independent Gemini API keys bundled for resilience.
-// When one key hits a rate limit, the next is tried instantly (different quota).
-// Users can override all of these with their own key via Settings.
-const DEMO_GEMINI_KEYS = [
-  atob('QVEuQWI4Uk42Slppb3RWQndtLXVkN0hwRFVEWE9sT2FyTzd5YXFHR3ZjYXl0SndfVlF3MVE='),
-];
+// Users can enter their own free Gemini API key in the Settings panel.
+// Get a free key at: https://aistudio.google.com/apikey
+// The backend server handles analysis without requiring a client key.
+const DEMO_GEMINI_KEYS = [];
 const DEMO_GEMINI_KEY = DEMO_GEMINI_KEYS[0]; // used for equality-check to detect user overrides
 
 let GEMINI_KEY = DEMO_GEMINI_KEY; // overridden by user's stored key on load
@@ -59,7 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (res.gemini_key) {
       geminiKeyInput.placeholder = `Your key: …${res.gemini_key.slice(-4)}`;
     } else {
-      geminiKeyInput.placeholder = `Demo key pool active (works out of the box)`;
+      geminiKeyInput.placeholder = `Enter your free Gemini key (aistudio.google.com/apikey)`;
     }
     await checkApiHealth();
   });
@@ -227,7 +224,7 @@ document.getElementById('retry-btn').addEventListener('click',    () => { showId
 const PHASE_LABELS = {
   starting:      '⚙️ Starting scan…',
   analyzing:     '🔍 Analyzing job posting patterns…',
-  deep_scanning: '🌐 Cross-referencing 14 platforms (Naukri, Indeed, LinkedIn…)',
+  deep_scanning: '🌐 Cross-referencing company data and platform signals…',
   done:          '✅ Analysis complete'
 };
 
@@ -242,13 +239,14 @@ async function runAnalysis(text, metadata, imageData = []) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, source: currentSource, metadata, image_data: imageData }),
-      signal: AbortSignal.timeout(API_URL.includes('localhost') || API_URL.includes('127.0.0.1') ? 2500 : 8000)
+      signal: AbortSignal.timeout(API_URL.includes('localhost') || API_URL.includes('127.0.0.1') ? 2500 : 35000)
     });
     if (!startRes.ok) throw new Error(`Server error: ${startRes.status}`);
     const { scan_id } = await startRes.json();
     setStep(2);
 
     const loadingMsg = document.getElementById('loading-msg');
+    if (loadingMsg) loadingMsg.textContent = '⏳ Connecting to analysis server (may take up to 30s on first use)…';
     let data = null;
     let attempts = 0;
 
