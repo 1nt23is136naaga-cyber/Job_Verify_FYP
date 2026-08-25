@@ -275,8 +275,6 @@ async function runAnalysis(text, metadata, imageData = []) {
     const { scan_id } = await startRes.json();
     setStep(2);
 
-    const loadingMsg = document.getElementById('loading-msg');
-    if (loadingMsg) loadingMsg.textContent = '⏳ Connecting to analysis server (may take up to 30s on first use)…';
     let data = null;
     let attempts = 0;
     let elapsed = 0;
