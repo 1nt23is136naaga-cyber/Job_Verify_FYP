@@ -262,10 +262,10 @@ async function runAnalysis(text, metadata, imageData = []) {
 
       const poller = setInterval(async () => {
         attempts++;
-        if (attempts > 20) {
+        if (attempts > 25) {
           clearInterval(poller);
           clearInterval(timer);
-          reject(new Error('Scan timed out after 70s. Please try again.'));
+          reject(new Error('Scan timed out after 50s. Please try again.'));
           return;
         }
         try {
@@ -281,7 +281,7 @@ async function runAnalysis(text, metadata, imageData = []) {
             resolve();
           }
         } catch(e) {}
-      }, 3500);
+      }, 2000);
     });
 
     setStep(3);
