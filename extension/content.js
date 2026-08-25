@@ -6,15 +6,11 @@
 // Confirmed via live DOM inspection using Chrome DevTools MCP.
 
 // ── Self-destruction guard ─────────────────────────────────────────────────────
-// If this script is already injected (e.g. after extension reload without tab refresh),
-// the OLD instance will detect context death and stop all activity via this flag.
-// The NEW instance sets the flag on load.
+(() => {
 if (window.__scamshield_v3_active) {
-  // Another instance is already running — this is a stale duplicate, do nothing.
-  // This happens if Chrome injects the script twice (rare but possible).
-} else {
-  window.__scamshield_v3_active = true;
+  return;
 }
+window.__scamshield_v3_active = true;
 
 // ── Context validity guard ─────────────────────────────────────────────────────
 // chrome.runtime.id becomes undefined when context is invalidated by extension reload.
@@ -32,14 +28,32 @@ function isContextValid() {
 }
 
 // ── Expand LinkedIn "see more" buttons ────────────────────────────────────────
+// Covers all known LinkedIn button patterns for expanding truncated descriptions.
 function expandSeeMore() {
   try {
-    document.querySelectorAll(
-      'button.inline-show-more-text__button, ' +
-      'button[aria-label*="see more"], ' +
-      'button[aria-label*="Show more"]'
-    ).forEach(b => {
-      try { b.click(); } catch (e) {}
+    // Selector-based patterns (class/aria — updated for 2025/2026 LinkedIn)
+    const patterns = [
+      'button.inline-show-more-text__button',
+      'button[aria-label*="see more"]',
+      'button[aria-label*="See more"]',
+      'button[aria-label*="Show more"]',
+      'button[aria-label*="show more"]',
+      '.jobs-description__footer-button',
+      '.jobs-description-details__show-more-button',
+      '.feed-shared-inline-show-more-text__see-more-less-toggle',
+      '[class*="show-more"] button',
+      '[class*="ShowMore"] button',
+      '[class*="see-more"] button',
+    ];
+    patterns.forEach(sel => {
+      try { document.querySelectorAll(sel).forEach(b => { try { b.click(); } catch(e) {} }); } catch(e) {}
+    });
+    // Text-content match — click any button/span whose label is literally "See more" / "Show more"
+    document.querySelectorAll('button, span[role="button"]').forEach(b => {
+      try {
+        const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+        if (t === 'see more' || t === 'show more' || t === '…see more') b.click();
+      } catch(e) {}
     });
   } catch (e) {}
 }
@@ -605,3 +619,5 @@ function _showBlockingOverlay(score, verdict, originalBtn, isUnscanned = false) 
   };
   document.getElementById('ss-cancel').onclick = () => overlay.remove();
 }
+})();
+

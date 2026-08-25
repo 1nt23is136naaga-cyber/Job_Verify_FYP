@@ -14,12 +14,12 @@
       <div class="logo-icon">🛡️</div>
       <div class="logo-text">
         <span class="logo-title">ScamShield</span>
-        <span class="logo-sub">AI Job Scam Detector v3.0</span>
+        <span class="logo-sub">AI Job Scam Detector v3.2</span>
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
-      <button id="settings-btn" title="API Settings" style="background:none;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;">⚙️</button>
-      <div class="status-dot" id="status-dot" title="API Connected"></div>
+      <button id="settings-btn" title="Settings" style="background:none;border:none;color:#888;cursor:pointer;font-size:14px;padding:2px 4px;border-radius:4px;">⚙️</button>
+      <div class="status-dot" id="status-dot" title="Checking..."></div>
     </div>
   </div>
 
@@ -34,9 +34,21 @@
 
     <!-- SETTINGS MODAL -->
     <div id="settings-modal" class="hidden" style="background:#111;border:1px solid #333;border-radius:10px;padding:14px;margin-bottom:12px;">
-      <div style="font-size:12px;font-weight:600;color:#fff;margin-bottom:6px;">⚙️ Backend API Configuration</div>
-      <div style="font-size:10px;color:#aaa;margin-bottom:8px;">Default: local server. Enter your deployed cloud URL if hosting remotely.</div>
-      <input id="api-url-input" class="confirm-input" type="text" placeholder="http://localhost:8000" style="margin-bottom:8px;">
+      <div style="font-size:12px;font-weight:600;color:#fff;margin-bottom:10px;">⚙️ Configuration</div>
+
+      <!-- Gemini API Key (optional — demo key is built-in) -->
+      <div style="font-size:10px;color:#90caf9;margin-bottom:4px;font-weight:600;">🔑 Gemini API Key <span style="color:#4caf50;font-weight:400;">(optional — demo key active, works out of the box)</span></div>
+      <input id="gemini-key-input" class="confirm-input" type="password" placeholder="AIza..." style="margin-bottom:4px;">
+      <div style="font-size:10px;color:#666;margin-bottom:10px;">
+        Free key: <a href="https://aistudio.google.com/apikey" target="_blank" style="color:#90caf9;">aistudio.google.com/apikey</a> — no credit card needed.
+      </div>
+
+      <hr style="border-color:#222;margin:8px 0;">
+
+      <!-- Backend Server URL (optional) -->
+      <div style="font-size:10px;color:#aaa;margin-bottom:4px;font-weight:600;">🖥️ Backend Server URL <span style="font-weight:400;">(optional — for self-hosted/cloud mode)</span></div>
+      <input id="api-url-input" class="confirm-input" type="text" placeholder="https://job-verify-fyp.onrender.com" style="margin-bottom:8px;">
+
       <div style="display:flex;gap:6px;">
         <button id="save-api-btn" style="background:#0a66c2;color:#fff;border:none;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;">Save</button>
         <button id="reset-api-btn" style="background:rgba(255,255,255,0.07);color:#aaa;border:1px solid #333;padding:6px 10px;border-radius:6px;font-size:11px;cursor:pointer;">Reset</button>
@@ -150,14 +162,14 @@
           <div class="info-value" id="res-title">—</div>
         </div>
         <div class="info-card" id="bert-card" style="display:none; grid-column: span 2; background: rgba(144, 202, 249, 0.1); border: 1px solid rgba(144, 202, 249, 0.3);">
-          <div class="info-label" style="color: #90caf9;">🧠 Deep Neural ML Model</div>
+          <div class="info-label" style="color: #90caf9;">🧠 ETFF-Net (DistilRoBERTa + LightGBM)</div>
           <div class="info-value" id="res-bert" style="color: #90caf9; font-weight: 600;">—</div>
         </div>
       </div>
 
       <!-- Risk Factors -->
       <div class="risk-section" id="risk-section">
-        <div class="section-title">⚠️ Risk Signals</div>
+        <div class="section-title">⚠️ Risk Patterns in this Posting</div>
         <div class="risk-pills" id="risk-pills"></div>
       </div>
 
@@ -166,12 +178,12 @@
 
       <!-- Feedback -->
       <div class="feedback-section" id="feedback-section">
-        <div class="section-title">Was this accurate?</div>
+        <div class="section-title">Was this assessment helpful?</div>
         <div class="feedback-btns">
-          <button class="fb-btn fb-safe" id="fb-safe">✅ Looks Genuine</button>
-          <button class="fb-btn fb-scam" id="fb-scam">🚨 Likely a Scam</button>
+          <button class="fb-btn fb-safe" id="fb-safe">✅ Looks Legitimate</button>
+          <button class="fb-btn fb-scam" id="fb-scam">⚠️ Seems Suspicious</button>
         </div>
-        <div class="feedback-thanks hidden" id="feedback-thanks">Thanks! Model updated 🎯</div>
+        <div class="feedback-thanks hidden" id="feedback-thanks">Thanks! 🛡️</div>
       </div>
 
       <!-- Re-analyze -->

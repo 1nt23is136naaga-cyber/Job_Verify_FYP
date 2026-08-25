@@ -43,9 +43,12 @@ def get_groq_client():
 try:
     nlp = spacy.load("en_core_web_sm")
 except Exception:
-    import subprocess, sys
-    subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"])
-    nlp = spacy.load("en_core_web_sm")
+    try:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "spacy", "download", "en_core_web_sm"], timeout=10)
+        nlp = spacy.load("en_core_web_sm")
+    except Exception:
+        nlp = spacy.blank("en")
 
 app = FastAPI(title="Job Scam API", version="1.0")
 
@@ -437,7 +440,7 @@ If you have no knowledge of this company, set is_known_legitimate to null."""
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-3-flash-preview",
             contents=prompt,
             config=genai_types.GenerateContentConfig(
                 temperature=0.1,
@@ -470,7 +473,7 @@ def ocr_images_with_gemini(image_data_list: list) -> str:
         try:
             b64data = data_url.split(',', 1)[1] if ',' in data_url else data_url
             response = client.models.generate_content(
-                model="gemini-2.0-flash",
+                model="gemini-3-flash-preview",
                 contents=[
                     {
                         "parts": [
@@ -923,15 +926,26 @@ Recruiter/Poster: {recruiter}
         client = get_gemini_client()
         if client:
             try:
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=combined_prompt,
-                    config=genai_types.GenerateContentConfig(
-                        temperature=0.2,
-                        max_output_tokens=400,
-                        response_mime_type="application/json"
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-3-flash-preview",
+                        contents=combined_prompt,
+                        config=genai_types.GenerateContentConfig(
+                            temperature=0.2,
+                            max_output_tokens=1000,
+                            response_mime_type="application/json"
+                        )
                     )
-                )
+                except Exception:
+                    response = client.models.generate_content(
+                        model="gemini-3.5-flash",
+                        contents=combined_prompt,
+                        config=genai_types.GenerateContentConfig(
+                            temperature=0.2,
+                            max_output_tokens=1000,
+                            response_mime_type="application/json"
+                        )
+                    )
                 raw = response.text.strip()
                 result = json.loads(raw)
                 return {
@@ -1071,12 +1085,12 @@ def analyze_job(req: AnalyzeRequest):
     # Bulk Spam Detection
     if duplicate_count >= 5:
         score += 30
-        risk_factors.append(f"Bulk Spam: This exact job text has been seen {duplicate_count} times globally (+30)")
+        risk_factors.append(f"Posting Pattern: Identical job text detected {duplicate_count}+ times across platforms — possible bulk campaign (+30)")
 
     # Web Scam Reports
     if has_scam_reports:
         score += 40
-        risk_factors.append(f"Web OSINT: Found negative scam/fraud reports for '{company}' or '{email}' online (+40)")
+        risk_factors.append(f"Web OSINT: Search results show potential fraud-related reports associated with this posting's details (+40)")
         
     # Social Proof Scoring
     followers = meta.get("company_followers", "")
@@ -1347,7 +1361,7 @@ def analyze_job(req: AnalyzeRequest):
         elif s > g:
             penalty = min(50, s * 15)
             score += penalty
-            risk_factors.append(f"Negative Reputation: Users flagged {company} as scam {s} times (+{penalty})")
+            risk_factors.append(f"Community Reports: {s} users previously flagged jobs from this entity as suspicious (+{penalty})")
 
     # Registry-aware Gemini Company Legitimacy Check
     # If company IS registered → trust bonus (already handled above)
@@ -1389,7 +1403,7 @@ def analyze_job(req: AnalyzeRequest):
                 risk_factors.append(f"🤖 Gemini Company Check: '{company}' appears to be a known legitimate employer (-15) — {gemini_company_check['summary']}")
             elif gemini_company_check["is_likely_legit"] is False:
                 score += 25
-                risk_factors.append(f"🤖 Gemini Company Check: '{company}' is not a known legitimate employer (+25) — {gemini_company_check['summary']}")
+                risk_factors.append(f"🤖 Gemini Company Check: Organisation not found in known legitimate employer records (+25) — {gemini_company_check['summary']}")
             elif gemini_company_check["summary"]:
                 risk_factors.append(f"🤖 Gemini Company Check: {gemini_company_check['summary']}")
 
@@ -1434,7 +1448,7 @@ def analyze_job(req: AnalyzeRequest):
             bert_prob = ml_engine_bert.predict_bert(raw_text)
             if bert_prob is not None:
                 bert_score = int(bert_prob * 100)
-                risk_factors.append(f"🧠 BERT Neural Model (Part 3) scam probability: {bert_score}%")
+                risk_factors.append(f"🧠 ETFF-Net (DistilRoBERTa + LightGBM) scam probability: {bert_score}%")
                 # High-confidence BERT result gets 60% weight; uncertain gets 30%
                 if bert_score > 70:
                     final_score = int((final_score * 0.4) + (bert_score * 0.6))
@@ -1475,18 +1489,18 @@ def analyze_job(req: AnalyzeRequest):
         
         final_score = max(0, min(final_score, 100))
     
-    # Verdict
+    # Verdict — describes the JOB POSTING risk level, never an individual
     if final_score < 35:
-        verdict = "✅ Likely Genuine"
+        verdict = "✅ Low Risk Posting"
         color = "green"
     elif final_score <= 60:
-        verdict = "⚠️ Possibly Suspicious"
+        verdict = "⚠️ Moderate Risk — Verify Before Applying"
         color = "orange"
     elif final_score <= 80:
-        verdict = "🚫 Likely Fraudulent"
+        verdict = "🚫 High Risk Posting — Proceed with Caution"
         color = "red"
     else:
-        verdict = "🚨 Very Likely Fraudulent"
+        verdict = "🚨 Very High Risk — Multiple Scam Indicators Found"
         color = "red"
 
     # Save to SQLite Database
@@ -1495,11 +1509,19 @@ def analyze_job(req: AnalyzeRequest):
     # Convert scoring notation to human-friendly format
     risk_factors = humanize_factors(risk_factors)
 
+    # Policy disclaimer — required for CWS compliance (Grey Potassium fix)
+    # All verdicts describe the job POSTING's risk pattern, not any individual or company.
+    POLICY_DISCLAIMER = (
+        "ScamShield's analysis reflects pattern-based risk indicators found in the job posting text. "
+        "Results are probabilistic and educational — not a definitive accusation against any individual, "
+        "recruiter, or organisation. Always apply personal judgment before acting."
+    )
+
     return {
         "job_id": job_id,
         "job_title": job_title,
         "company": company,
-        "recruiter": recruiter,
+        "recruiter": recruiter,  # informational only — never used in verdict framing
         "email": email,
         "risk_score": final_score,
         "rules_score_base": score,
@@ -1520,7 +1542,8 @@ def analyze_job(req: AnalyzeRequest):
         "is_impersonating": is_impersonating,
         "target_brand": target_brand,
         "has_online_presence": has_online_presence,
-        "risk_factors": risk_factors
+        "risk_factors": risk_factors,
+        "policy_disclaimer": POLICY_DISCLAIMER
     }
 
 # ── DEEP VERIFICATION (scraper2.py integration) ──────────────────────────────
@@ -1593,29 +1616,29 @@ def _run_deep_verify(task_key: str, job_title: str, company: str):
 
         if portal_hits == 0 and not has_careers and not has_google:
             if is_known_brand:
-                score_adjustment = -10
-                adj_reason = f"Verified enterprise direct listing ({company}) (-10)"
+                score_adjustment = -5
+                adj_reason = f"Verified enterprise direct listing ({company})"
             else:
                 score_adjustment = +5
                 adj_reason = f"Not confirmed on external job platforms (+5 risk)"
         elif portal_hits <= 2:
-            score_adjustment = -10
-            adj_reason = f"Found on {portal_hits} platform(s) (-10 risk)"
+            score_adjustment = -5
+            adj_reason = f"Found on {portal_hits} platform(s) (-5 risk)"
         elif portal_hits <= 5:
-            score_adjustment = -20
-            adj_reason = f"Found on {portal_hits} platforms (-20 risk)"
+            score_adjustment = -10
+            adj_reason = f"Found on {portal_hits} platforms (-10 risk)"
         else:
-            score_adjustment = -30
-            adj_reason = f"Found on {portal_hits}+ platforms (-30 risk)"
+            score_adjustment = -15
+            adj_reason = f"Found on {portal_hits}+ platforms (-15 risk)"
 
         if has_careers:
-            score_adjustment -= 10
-            adj_reason += " + Careers page verified (-10)"
-        if has_google:
             score_adjustment -= 5
-            adj_reason += " + Google confirmed (-5)"
+            adj_reason += " + Careers page verified (-5)"
+        if has_google:
+            score_adjustment -= 3
+            adj_reason += " + Google confirmed (-3)"
 
-        score_adjustment = max(-50, min(score_adjustment, +25))  # cap range
+        score_adjustment = max(-25, min(score_adjustment, +20))  # proportional range
         # ─────────────────────────────────────────────────────────────────
 
         _verify_tasks[task_key] = {
@@ -1725,8 +1748,19 @@ def _run_full_scan(scan_id: str, req_dict: dict):
         else:
             deep_data = {"verdict": "Skipped — no title/company", "confirmed_on": [], "not_found_on": [], "portal_hits": 0}
 
-        # Phase 3: Merge
-        final_risk  = max(0, min(100, base_risk + score_adjustment))
+        # Phase 3: Merge with precision calibration
+        raw_merged_risk = base_risk + score_adjustment
+        
+        # Calibration floors:
+        # If company was NOT found in official registry, keep a realistic uncertainty floor (8-12 risk)
+        reg_status = analyze_result.get("registry_status")
+        if reg_status == "not_found" and raw_merged_risk < 10:
+            final_risk = 10
+        elif raw_merged_risk < 3 and not analyze_result.get("is_trusted_brand", False) and reg_status != "registered":
+            final_risk = 5
+        else:
+            final_risk = max(0, min(100, raw_merged_risk))
+
         final_trust = 100 - final_risk
 
         # Rebuild verdict with final score

@@ -5,6 +5,8 @@ services:
     plan: free
     region: oregon
     dockerfilePath: Dockerfile
+    dockerContext: .
+    healthCheckPath: /docs
     envVars:
       - key: GOOGLE_API_KEY
         sync: false
