@@ -249,16 +249,37 @@ async function runAnalysis(text, metadata, imageData = []) {
     if (loadingMsg) loadingMsg.textContent = '⏳ Connecting to analysis server (may take up to 30s on first use)…';
     let data = null;
     let attempts = 0;
+    let elapsed = 0;
 
     await new Promise((resolve, reject) => {
+      const timer = setInterval(() => {
+        elapsed++;
+        if (loadingMsg && attempts > 2) {
+          const phase = loadingMsg.textContent.split('(')[0].trim();
+          loadingMsg.textContent = `${phase} (${elapsed}s…)`;
+        }
+      }, 1000);
+
       const poller = setInterval(async () => {
         attempts++;
-        if (attempts > 60) { clearInterval(poller); reject(new Error('Scan timed out.')); return; }
+        if (attempts > 20) {
+          clearInterval(poller);
+          clearInterval(timer);
+          reject(new Error('Scan timed out after 70s. Please try again.'));
+          return;
+        }
         try {
           const poll   = await fetch(`${API_URL}/full_scan_status/${scan_id}`);
           const result = await poll.json();
-          if (loadingMsg && PHASE_LABELS[result.phase]) loadingMsg.textContent = PHASE_LABELS[result.phase];
-          if (result.status === 'done') { clearInterval(poller); data = result; resolve(); }
+          if (loadingMsg && PHASE_LABELS[result.phase]) {
+            loadingMsg.textContent = `${PHASE_LABELS[result.phase]} (${elapsed}s…)`;
+          }
+          if (result.status === 'done') {
+            clearInterval(poller);
+            clearInterval(timer);
+            data = result;
+            resolve();
+          }
         } catch(e) {}
       }, 3500);
     });
