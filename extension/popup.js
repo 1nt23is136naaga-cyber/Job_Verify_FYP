@@ -228,10 +228,40 @@ const PHASE_LABELS = {
   done:          '✅ Analysis complete'
 };
 
+// ── Backend Wake-Up Ping ─────────────────────────────────────────────────────
+async function waitForBackend(loadingMsg, maxMs = 33000) {
+  if (API_URL.includes('localhost') || API_URL.includes('127.0.0.1')) return true;
+  const start = Date.now();
+  let attempt = 0;
+  while (Date.now() - start < maxMs) {
+    attempt++;
+    try {
+      const r = await fetch(`${API_URL}/docs`, { method: 'HEAD', signal: AbortSignal.timeout(3000) });
+      if (r.ok || r.status === 200 || r.status === 404) return true;
+    } catch(e) {}
+    if (loadingMsg) loadingMsg.textContent = `⏳ Starting analysis server… (${Math.round((Date.now()-start)/1000)}s)`;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  return false;
+}
+
 // ── Main Analysis Orchestrator ────────────────────────────────────────────────
 async function runAnalysis(text, metadata, imageData = []) {
   showLoading();
   setStep(1);
+
+  // Wake backend if needed (handles Render cold starts)
+  const loadingMsg = document.getElementById('loading-msg');
+  if (loadingMsg) loadingMsg.textContent = '⏳ Connecting to analysis server…';
+  const isLocal = API_URL.includes('localhost') || API_URL.includes('127.0.0.1');
+  if (!isLocal) {
+    const awake = await waitForBackend(loadingMsg, 33000);
+    if (!awake) {
+      showError('Analysis server is starting up. Please click Analyze again in a few seconds.');
+      return;
+    }
+  }
+  if (loadingMsg) loadingMsg.textContent = '⏳ Connecting to analysis server (may take up to 30s on first use)…';
 
   // Try backend first
   try {
@@ -239,7 +269,7 @@ async function runAnalysis(text, metadata, imageData = []) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text, source: currentSource, metadata, image_data: imageData }),
-      signal: AbortSignal.timeout(API_URL.includes('localhost') || API_URL.includes('127.0.0.1') ? 2500 : 35000)
+      signal: AbortSignal.timeout(isLocal ? 2500 : 12000)
     });
     if (!startRes.ok) throw new Error(`Server error: ${startRes.status}`);
     const { scan_id } = await startRes.json();
