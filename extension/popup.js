@@ -11,11 +11,7 @@ let API_URL = 'https://job-verify-fyp.onrender.com';
 // When one key hits a rate limit, the next is tried instantly (different quota).
 // Users can override all of these with their own key via Settings.
 const DEMO_GEMINI_KEYS = [
-  'AIzaSyAlvAs6R5ghkCpEkHOpreW-oXGNM-X3ICE',
-  atob('QVEuQWI4Uk42SUhYNlUwUUVHN0xENkQ1Skg0bTZLRmc4MlpiblNQQTNrTXV6RlpxUVhDYVE='),
-  atob('QVEuQWI4Uk42SlZxbF9RUC1vakN1a3hsYlJYcHJxSTZkS1dOR2ZoNEJjZi15N2psMGMzNVE='),
-  atob('QVEuQWI4Uk42SzctSVRERWVrYl9iNHhnMklLeUk5Z0VjUFZwRmNlRnQxMjQtU20taTBwV2c='),
-  atob('QVEuQWI4Uk42SUpzOFBLTWEzeDlXX1Rtdk9UWnRtOHM0M242VG01cy1pMndoTzJORjdzNXc='),
+  atob('QVEuQWI4Uk42Slppb3RWQndtLXVkN0hwRFVEWE9sT2FyTzd5YXFHR3ZjYXl0SndfVlF3MVE='),
 ];
 const DEMO_GEMINI_KEY = DEMO_GEMINI_KEYS[0]; // used for equality-check to detect user overrides
 
